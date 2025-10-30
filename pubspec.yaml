@@ -1,0 +1,50 @@
+name: h2orbit
+description: "A new Flutter project."
+
+publish_to: 'none' 
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.9.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+  cloud_firestore: ^6.0.3
+  intl: ^0.20.2
+  geocoding: ^4.0.0
+  geolocator: ^14.0.2
+  http: ^1.5.0
+  firebase_auth: ^6.1.1
+  shared_preferences: ^2.5.3
+  font_awesome_flutter: ^10.12.0
+  lottie: ^3.3.2
+  firebase_core: ^4.2.0
+  provider: ^6.1.5+1
+  google_fonts: ^6.3.2
+  flutter_local_notifications: ^19.5.0
+  timezone: ^0.10.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^5.0.0
+
+flutter:
+
+  uses-material-design: true
+
+  assets:
+    - assets/animations/goal.json
+    - assets/animations/brain.json
+    - assets/animations/glass.json
+    - assets/animations/bell.json
+    - assets/animations/splash.json
+    - assets/animations/water.json
+    - assets/animations/water2.json
+
+    

@@ -1,0 +1,46 @@
+{
+  "project_info": {
+    "project_number": "330540014281",
+    "project_id": "h2orbit-80683",
+    "storage_bucket": "h2orbit-80683.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:330540014281:android:c2eb85202b15e7310a0b18",
+        "android_client_info": {
+          "package_name": "com.example.h2orbit"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "330540014281-ltgqmnjh9kffjg2dg0skmiujh3ainrq2.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA5tqjWXwv3Lh3f28qRkfWEOux9XJRjj3w"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "330540014281-ltgqmnjh9kffjg2dg0skmiujh3ainrq2.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "330540014281-8k9hasd9i9rkpvhrrl6hnhmkh7r88ol5.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.h2orbit"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
