@@ -1,16 +1,32 @@
-# h2orbit
+# 💧 H2Orbit – Smart Water Tracker
 
-A new Flutter project.
+**Stay hydrated, stay healthy.** H2Orbit is a beautiful, intelligent water tracking app built with **Flutter** that goes beyond basic logging.
 
-## Getting Started
+---
 
-This project is a starting point for a Flutter application.
+### ✨ Features
+- **AI Hydration Prediction** 🤖 – Smart intake suggestions based on time, weather & activity  
+- **Weather & Location Aware** 🌤️ – Auto-adjusts daily goals  
+- **Beverage Tracking** ☕ – Track water, tea, coffee with caffeine impact  
+- **Real-time Firebase Sync** 🔥 – Instant updates across devices  
+- **Offline First** 📴 – Works anywhere, syncs when back online  
+- **Smart Local Notifications** ⏰ – Gentle reminders from 8 AM to 10 PM  
+- **Stunning Animations** 🌊 – Lottie waves, smooth transitions  
+- **Glassmorphism UI** 🧊 – Ocean-themed frosted glass design  
+- **Google Fonts: Poppins** ✍️ – Clean, modern typography  
+- **Font Awesome Icons** ✨ – Professional & consistent icons  
+- **Analytics & Insights** 📊 – Daily/weekly charts, streaks, achievements  
 
-A few resources to get you started if this is your first Flutter project:
+---
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+### 🚀 Tech Stack
+- **Flutter** (Cross-platform: Android & iOS)  
+- **Firebase** (Auth, Firestore, Cloud Functions)  
+- **Lottie Animations**  
+- **Flutter Local Notifications**  
+- **Weather API Integration**  
+- **Google Fonts & Font Awesome Flutter**  
+- **Charts Flutter (fl_chart)**  
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+---
+# "Drink smart. Live vibrant." 💙
