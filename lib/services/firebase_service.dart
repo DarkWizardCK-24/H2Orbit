@@ -43,7 +43,10 @@ class FirebaseService {
   Stream<List<WaterIntakeModel>> getTodayIntakeStream(String userId) {
     final today = DateTime.now();
     final startOfDay = DateTime(today.year, today.month, today.day);
+    final endOfDay = startOfDay.add(const Duration(days: 1));
 
+
+    // Changed to match your index: userId (Ascending) + timestamp (Ascending)
     return _firestore
         .collection('water_intake')
         .where('userId', isEqualTo: userId)
@@ -51,12 +54,22 @@ class FirebaseService {
           'timestamp',
           isGreaterThanOrEqualTo: Timestamp.fromDate(startOfDay),
         )
-        .orderBy('timestamp', descending: true)
+        .where('timestamp', isLessThan: Timestamp.fromDate(endOfDay))
+        .orderBy(
+          'timestamp',
+          descending: false,
+        ) // Changed to ascending to match index
         .snapshots()
         .map((snapshot) {
-          return snapshot.docs
+
+          // Reverse the list to show most recent first in UI
+          final intakes = snapshot.docs
               .map((doc) => WaterIntakeModel.fromFirestore(doc))
+              .toList()
+              .reversed
               .toList();
+
+          return intakes;
         });
   }
 
@@ -70,11 +83,14 @@ class FirebaseService {
         .where('userId', isEqualTo: userId)
         .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
         .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(end))
-        .orderBy('timestamp', descending: true)
+        .orderBy('timestamp', descending: false) // Changed to match index
         .get();
 
+    // Reverse to show most recent first
     return snapshot.docs
         .map((doc) => WaterIntakeModel.fromFirestore(doc))
+        .toList()
+        .reversed
         .toList();
   }
 
