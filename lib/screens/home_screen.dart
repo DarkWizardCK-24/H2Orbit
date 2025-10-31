@@ -33,7 +33,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   int totalIntakeToday = 0;
   int targetGlasses = 8;
-  int dailyGoalMl = 2000; // Default 2000ml
+  int dailyGoalMl = 2000;
   UserModel? currentUser;
   bool _isLoading = true;
   bool _isRefreshing = false;
@@ -86,7 +86,6 @@ class _HomeScreenState extends State<HomeScreen>
         setState(() {
           currentUser = user;
           targetGlasses = user.dailyGlassTarget;
-          // Calculate daily goal in ml (each glass = 250ml)
           dailyGoalMl = targetGlasses * 250;
         });
         debugPrint(
@@ -133,13 +132,16 @@ class _HomeScreenState extends State<HomeScreen>
             final previousTotal = totalIntakeToday;
 
             debugPrint(
-              'Intake update: total=$total ml, glasses=$totalGlasses, dailyGoal=$dailyGoalMl ml',
+              'Stream update: total=$total ml, glasses=$totalGlasses, dailyGoal=$dailyGoalMl ml',
             );
 
-            setState(() {
-              totalIntakeToday = total;
-              _totalGlassesAllTime = totalGlasses;
-            });
+            // Force setState to update UI
+            if (mounted) {
+              setState(() {
+                totalIntakeToday = total;
+                _totalGlassesAllTime = totalGlasses;
+              });
+            }
 
             // Check achievements
             await _checkAllAchievements(
@@ -162,19 +164,13 @@ class _HomeScreenState extends State<HomeScreen>
     required int totalGlasses,
   }) async {
     try {
-      // Check daily goal achievement
       if (currentTotal >= dailyGoalMl && previousTotal < dailyGoalMl) {
         await _achievementManager.checkDailyGoal(currentTotal, dailyGoalMl);
       }
 
-      // Check overachiever
       await _achievementManager.checkOverachiever(currentTotal, dailyGoalMl);
-
-      // Update and check streak achievement
       await _loadStreakData();
       await _achievementManager.checkStreakAchievement(_currentStreak);
-
-      // Check glass milestone
       await _achievementManager.checkGlassMilestone(totalGlasses);
     } catch (e) {
       debugPrint('Error checking achievements: $e');
@@ -206,23 +202,18 @@ class _HomeScreenState extends State<HomeScreen>
     setState(() => _isRefreshing = true);
 
     try {
-      // Reload user data
       await _loadUserData();
-
-      // Reload streak data
       await _loadStreakData();
-
-      // Force update AI prediction
       await _updateAIPrediction();
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Row(
-              children: [
-                const Icon(Icons.check_circle, color: Colors.white, size: 20),
-                const SizedBox(width: 12),
-                const Text('Data refreshed successfully!'),
+              children: const [
+                Icon(Icons.check_circle, color: Colors.white, size: 20),
+                SizedBox(width: 12),
+                Text('Data refreshed successfully!'),
               ],
             ),
             backgroundColor: AppTheme.oceanBlue,
@@ -241,13 +232,13 @@ class _HomeScreenState extends State<HomeScreen>
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Row(
-              children: [
-                const Icon(Icons.error_outline, color: Colors.white, size: 20),
-                const SizedBox(width: 12),
-                const Text('Failed to refresh data'),
+              children: const [
+                Icon(Icons.error_outline, color: Colors.white, size: 20),
+                SizedBox(width: 12),
+                Text('Failed to refresh data'),
               ],
             ),
-            backgroundColor: Colors.red.shade700,
+            backgroundColor: Colors.red,
             behavior: SnackBarBehavior.floating,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
@@ -282,9 +273,10 @@ class _HomeScreenState extends State<HomeScreen>
         hydrationValue: hydrationValue,
       );
 
+      debugPrint('Adding water intake: $ml ml of $beverageType');
       await _firebaseService.addWaterIntake(intake);
+      debugPrint('Water intake added successfully');
 
-      // Check time-based achievements immediately after adding
       await _achievementManager.checkEarlyBird();
       await _achievementManager.checkNightOwl();
 
@@ -320,10 +312,10 @@ class _HomeScreenState extends State<HomeScreen>
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Row(
-            children: [
-              const Icon(Icons.error_outline, color: Colors.white, size: 20),
-              const SizedBox(width: 12),
-              const Expanded(
+            children: const [
+              Icon(Icons.error_outline, color: Colors.white, size: 20),
+              SizedBox(width: 12),
+              Expanded(
                 child: Text(
                   'Failed to add intake. Please try again.',
                   style: TextStyle(fontSize: 14),
@@ -331,7 +323,7 @@ class _HomeScreenState extends State<HomeScreen>
               ),
             ],
           ),
-          backgroundColor: Colors.red.shade700,
+          backgroundColor: Colors.red,
           behavior: SnackBarBehavior.floating,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
@@ -394,14 +386,13 @@ class _HomeScreenState extends State<HomeScreen>
       );
     }
 
-    // Calculate progress correctly
     final progress = dailyGoalMl > 0
         ? (totalIntakeToday / dailyGoalMl).clamp(0.0, 1.0)
         : 0.0;
     final glassesConsumed = (totalIntakeToday / 250).floor();
 
     debugPrint(
-      'Build: progress=$progress, totalIntake=$totalIntakeToday, dailyGoal=$dailyGoalMl',
+      'UI Render: totalIntake=$totalIntakeToday, progress=$progress, glasses=$glassesConsumed',
     );
 
     return Scaffold(
@@ -410,7 +401,6 @@ class _HomeScreenState extends State<HomeScreen>
         child: SafeArea(
           child: Column(
             children: [
-              // Header
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
                 child: Row(
@@ -427,7 +417,6 @@ class _HomeScreenState extends State<HomeScreen>
                     ),
                     Row(
                       children: [
-                        // Streak indicator
                         if (_currentStreak > 0)
                           Container(
                             padding: const EdgeInsets.symmetric(
@@ -475,8 +464,6 @@ class _HomeScreenState extends State<HomeScreen>
                   ],
                 ),
               ),
-
-              // Content with RefreshIndicator
               Expanded(
                 child: RefreshIndicator(
                   onRefresh: _refreshData,
@@ -488,7 +475,6 @@ class _HomeScreenState extends State<HomeScreen>
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // Progress Card
                         GlassContainer(
                           child: Column(
                             children: [
@@ -545,7 +531,9 @@ class _HomeScreenState extends State<HomeScreen>
                                     height: 100,
                                     child: ProgressRing(
                                       progress: progress,
-                                      key: ValueKey(progress),
+                                      key: ValueKey(
+                                        'progress_$totalIntakeToday',
+                                      ),
                                     ),
                                   ),
                                 ],
@@ -554,15 +542,12 @@ class _HomeScreenState extends State<HomeScreen>
                               WaterWaveAnimation(
                                 progress: progress,
                                 controller: _waveController,
-                                key: ValueKey(progress),
+                                key: ValueKey('wave_$totalIntakeToday'),
                               ),
                             ],
                           ),
                         ),
-
                         const SizedBox(height: 28),
-
-                        // Quick Add Section
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
@@ -586,7 +571,6 @@ class _HomeScreenState extends State<HomeScreen>
                           ],
                         ),
                         const SizedBox(height: 16),
-
                         GridView.builder(
                           shrinkWrap: true,
                           physics: const NeverScrollableScrollPhysics(),
@@ -611,10 +595,7 @@ class _HomeScreenState extends State<HomeScreen>
                             );
                           },
                         ),
-
                         const SizedBox(height: 28),
-
-                        // AI Insights Section
                         const Text(
                           'AI Insights',
                           style: TextStyle(
@@ -624,7 +605,6 @@ class _HomeScreenState extends State<HomeScreen>
                           ),
                         ),
                         const SizedBox(height: 16),
-
                         if (_aiPrediction.isNotEmpty) ...[
                           InsightCard(
                             icon: FontAwesomeIcons.lightbulb,
@@ -633,7 +613,6 @@ class _HomeScreenState extends State<HomeScreen>
                           ),
                           const SizedBox(height: 12),
                         ],
-
                         InsightCard(
                           icon: progress >= 1.0
                               ? FontAwesomeIcons.trophy
@@ -651,8 +630,6 @@ class _HomeScreenState extends State<HomeScreen>
                               ? 'You\'re doing great! Keep hydrating!'
                               : 'Let\'s boost your hydration today!',
                         ),
-
-                        // Achievement Progress Indicator
                         if (_currentStreak >= 3 ||
                             _totalGlassesAllTime >= 50) ...[
                           const SizedBox(height: 12),
@@ -662,14 +639,14 @@ class _HomeScreenState extends State<HomeScreen>
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Row(
-                                  children: [
-                                    const Icon(
+                                  children: const [
+                                    Icon(
                                       Icons.emoji_events,
                                       color: Colors.amber,
                                       size: 20,
                                     ),
-                                    const SizedBox(width: 8),
-                                    const Text(
+                                    SizedBox(width: 8),
+                                    Text(
                                       'Achievements',
                                       style: TextStyle(
                                         color: Colors.white,
@@ -694,7 +671,6 @@ class _HomeScreenState extends State<HomeScreen>
                             ),
                           ),
                         ],
-
                         const SizedBox(height: 100),
                       ],
                     ),
