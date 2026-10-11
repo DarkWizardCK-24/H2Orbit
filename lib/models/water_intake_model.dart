@@ -6,9 +6,11 @@ class WaterIntakeModel {
   final DateTime timestamp;
   final int milliliters;
   final String beverageType;
+
+  /// Volume weighted by how hydrating the drink is (e.g. coffee counts less).
   final double hydrationValue;
 
-  WaterIntakeModel({
+  const WaterIntakeModel({
     required this.id,
     required this.userId,
     required this.timestamp,
@@ -17,13 +19,22 @@ class WaterIntakeModel {
     required this.hydrationValue,
   });
 
+  WaterIntakeModel copyWith({String? id}) => WaterIntakeModel(
+    id: id ?? this.id,
+    userId: userId,
+    timestamp: timestamp,
+    milliliters: milliliters,
+    beverageType: beverageType,
+    hydrationValue: hydrationValue,
+  );
+
   factory WaterIntakeModel.fromFirestore(DocumentSnapshot doc) {
-    Map data = doc.data() as Map;
+    final data = doc.data() as Map<String, dynamic>;
     return WaterIntakeModel(
       id: doc.id,
       userId: data['userId'] ?? '',
       timestamp: (data['timestamp'] as Timestamp).toDate(),
-      milliliters: data['milliliters'] ?? 0,
+      milliliters: (data['milliliters'] ?? 0) as int,
       beverageType: data['beverageType'] ?? 'water',
       hydrationValue: (data['hydrationValue'] ?? 0).toDouble(),
     );

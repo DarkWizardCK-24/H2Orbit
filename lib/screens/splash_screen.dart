@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:h2orbit/screens/auth_screen.dart';
 import 'package:h2orbit/screens/home_screen.dart';
 import 'package:h2orbit/screens/onboarding_screen.dart';
+import 'package:h2orbit/services/auth_service.dart';
 import 'package:h2orbit/utils/theme.dart';
-import 'package:lottie/lottie.dart';
+import 'package:h2orbit/widgets/app_logo.dart';
+import 'package:h2orbit/widgets/ocean_scaffold.dart';
+import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -13,53 +16,54 @@ class SplashScreen extends StatefulWidget {
   State<SplashScreen> createState() => _SplashScreenState();
 }
 
-class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<double> _fadeAnimation;
-  late Animation<double> _scaleAnimation;
+class _SplashScreenState extends State<SplashScreen>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    duration: const Duration(milliseconds: 1400),
+    vsync: this,
+  )..forward();
+
+  late final Animation<double> _fade = CurvedAnimation(
+    parent: _controller,
+    curve: Curves.easeIn,
+  );
+  late final Animation<double> _scale = Tween<double>(
+    begin: 0.6,
+    end: 1.0,
+  ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOutBack));
 
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(
-      duration: const Duration(milliseconds: 1500),
-      vsync: this,
-    );
-
-    _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeIn),
-    );
-
-    _scaleAnimation = Tween<double>(begin: 0.5, end: 1.0).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.elasticOut),
-    );
-
-    _controller.forward();
-    _navigateToNext();
+    _navigate();
   }
 
-  Future<void> _navigateToNext() async {
-    await Future.delayed(const Duration(seconds: 3));
-    
-    final prefs = await SharedPreferences.getInstance();
-    final hasSeenOnboarding = prefs.getBool('hasSeenOnboarding') ?? false;
-    final user = FirebaseAuth.instance.currentUser;
-
+  Future<void> _navigate() async {
+    // Show the logo for a moment while the first-run flag loads.
+    final results = await Future.wait([
+      SharedPreferences.getInstance(),
+      Future<void>.delayed(const Duration(milliseconds: 1800)),
+    ]);
+    final prefs = results.first as SharedPreferences;
     if (!mounted) return;
 
-    if (!hasSeenOnboarding) {
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const OnboardingScreen()),
-      );
-    } else if (user != null) {
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const HomeScreen()),
-      );
-    } else {
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const OnboardingScreen()),
-      );
-    }
+    final hasSeenOnboarding = prefs.getBool('hasSeenOnboarding') ?? false;
+    final signedIn = context.read<AuthService>().isSignedIn;
+
+    final Widget next = !hasSeenOnboarding
+        ? const OnboardingScreen()
+        : signedIn
+        ? const HomeScreen()
+        : const AuthScreen(); // seen onboarding before: go straight to sign-in
+
+    Navigator.of(context).pushReplacement(
+      PageRouteBuilder<void>(
+        pageBuilder: (_, _, _) => next,
+        transitionsBuilder: (_, animation, _, child) =>
+            FadeTransition(opacity: animation, child: child),
+        transitionDuration: const Duration(milliseconds: 400),
+      ),
+    );
   }
 
   @override
@@ -70,49 +74,38 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(gradient: AppTheme.oceanGradient),
-        child: Center(
-          child: FadeTransition(
-            opacity: _fadeAnimation,
-            child: ScaleTransition(
-              scale: _scaleAnimation,
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Lottie.asset(
-                    'assets/animations/splash.json',
-                    width: 200,
-                    height: 200,
-                    fit: BoxFit.contain,
+    return OceanScaffold(
+      showBack: false,
+      body: Center(
+        child: FadeTransition(
+          opacity: _fade,
+          child: ScaleTransition(
+            scale: _scale,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const AppLogo(size: 150, glow: AppTheme.lightCyan),
+                const SizedBox(height: 24),
+                const BrandTitle(fontSize: 46),
+                const SizedBox(height: 10),
+                Text(
+                  'Smart water tracking',
+                  style: TextStyle(
+                    fontSize: 15,
+                    color: Colors.white.withValues(alpha: 0.8),
+                    letterSpacing: 1,
                   ),
-                  const SizedBox(height: 30),
-                  ShaderMask(
-                    shaderCallback: (bounds) => const LinearGradient(
-                      colors: [Colors.white, AppTheme.lightCyan],
-                    ).createShader(bounds),
-                    child: const Text(
-                      'H₂Orbit',
-                      style: TextStyle(
-                        fontSize: 48,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                        letterSpacing: 2,
-                      ),
-                    ),
+                ),
+                const SizedBox(height: 40),
+                const SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2.5,
+                    color: AppTheme.lightCyan,
                   ),
-                  const SizedBox(height: 10),
-                  Text(
-                    'Smart Water Tracking',
-                    style: TextStyle(
-                      fontSize: 16,
-                      color: Colors.white.withOpacity(0.8),
-                      letterSpacing: 1,
-                    ),
-                  ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ),

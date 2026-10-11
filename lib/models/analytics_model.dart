@@ -1,224 +1,184 @@
-class AnalyticsModel {
-  final int totalIntake;
-  final int targetIntake;
-  final int daysTracked;
+import 'package:h2orbit/domain/hydration_math.dart';
+import 'package:h2orbit/domain/streaks.dart';
+import 'package:h2orbit/models/water_intake_model.dart';
+import 'package:h2orbit/utils/helpers.dart';
+
+/// Total drunk on one calendar day.
+class DayTotal {
+  final DateTime day;
+  final int ml;
+  final bool isToday;
+  final bool isFuture;
+
+  const DayTotal({
+    required this.day,
+    required this.ml,
+    required this.isToday,
+    required this.isFuture,
+  });
+}
+
+enum DayPart {
+  morning('Morning', '5 am - 12 pm'),
+  afternoon('Afternoon', '12 - 5 pm'),
+  evening('Evening', '5 - 9 pm'),
+  night('Night', '9 pm - 5 am');
+
+  final String label;
+  final String range;
+
+  const DayPart(this.label, this.range);
+
+  static DayPart of(DateTime time) {
+    final h = time.hour;
+    if (h >= 5 && h < 12) return DayPart.morning;
+    if (h >= 12 && h < 17) return DayPart.afternoon;
+    if (h >= 17 && h < 21) return DayPart.evening;
+    return DayPart.night;
+  }
+}
+
+/// Everything the analytics screen shows, computed from one list of intakes.
+class AnalyticsSummary {
+  final int goalMl;
+
+  /// Monday to Sunday of the current week.
+  final List<DayTotal> week;
+
+  /// The last 30 days, oldest first, ending today.
+  final List<DayTotal> last30;
+
+  final int monthTotalMl;
+  final int monthDaysElapsed;
   final int currentStreak;
   final int longestStreak;
-  final double averageDaily;
-  final Map<String, int> weeklyData;
-  final Map<String, int> monthlyData;
-  final List<String> achievements;
+  final int goalDaysThisWeek;
+  final int goalDaysLast30;
 
-  AnalyticsModel({
-    required this.totalIntake,
-    required this.targetIntake,
-    required this.daysTracked,
+  /// Volume per beverage type over the last 30 days.
+  final Map<String, int> byBeverage;
+
+  /// Volume per part of the day over the last 30 days.
+  final Map<DayPart, int> byDayPart;
+
+  /// Highest single-day total as a fraction of the goal (1.5 = 150 %).
+  final double bestDayRatio;
+
+  /// Days with a drink logged before 8 am.
+  final int earlyBirdDays;
+
+  const AnalyticsSummary({
+    required this.goalMl,
+    required this.week,
+    required this.last30,
+    required this.monthTotalMl,
+    required this.monthDaysElapsed,
     required this.currentStreak,
     required this.longestStreak,
-    required this.averageDaily,
-    required this.weeklyData,
-    required this.monthlyData,
-    required this.achievements,
+    required this.goalDaysThisWeek,
+    required this.goalDaysLast30,
+    required this.byBeverage,
+    required this.byDayPart,
+    required this.bestDayRatio,
+    required this.earlyBirdDays,
   });
 
-  double get completionRate {
-    if (targetIntake == 0) return 0;
-    return (totalIntake / targetIntake).clamp(0.0, 1.0);
-  }
+  factory AnalyticsSummary.from(
+    Iterable<WaterIntakeModel> intakes, {
+    required int goalMl,
+    required DateTime now,
+  }) {
+    final today = Dates.startOfDay(now);
+    final totals = HydrationMath.totalsByDay(intakes);
 
-  String get performanceLevel {
-    if (completionRate >= 1.0) {
-      return 'Excellent';
-    } else if (completionRate >= 0.8) {
-      return 'Great';
-    } else if (completionRate >= 0.6) {
-      return 'Good';
-    } else if (completionRate >= 0.4) {
-      return 'Fair';
-    } else {
-      return 'Needs Improvement';
-    }
-  }
-
-  Map<String, dynamic> toMap() {
-    return {
-      'totalIntake': totalIntake,
-      'targetIntake': targetIntake,
-      'daysTracked': daysTracked,
-      'currentStreak': currentStreak,
-      'longestStreak': longestStreak,
-      'averageDaily': averageDaily,
-      'weeklyData': weeklyData,
-      'monthlyData': monthlyData,
-      'achievements': achievements,
-    };
-  }
-
-  factory AnalyticsModel.fromMap(Map<String, dynamic> map) {
-    return AnalyticsModel(
-      totalIntake: map['totalIntake'] ?? 0,
-      targetIntake: map['targetIntake'] ?? 0,
-      daysTracked: map['daysTracked'] ?? 0,
-      currentStreak: map['currentStreak'] ?? 0,
-      longestStreak: map['longestStreak'] ?? 0,
-      averageDaily: (map['averageDaily'] ?? 0).toDouble(),
-      weeklyData: Map<String, int>.from(map['weeklyData'] ?? {}),
-      monthlyData: Map<String, int>.from(map['monthlyData'] ?? {}),
-      achievements: List<String>.from(map['achievements'] ?? []),
+    DayTotal dayTotal(DateTime day) => DayTotal(
+      day: day,
+      ml: totals[day] ?? 0,
+      isToday: day == today,
+      isFuture: day.isAfter(today),
     );
-  }
-}
 
-class DailyStats {
-  final DateTime date;
-  final int intake;
-  final int target;
-  final List<IntakeEntry> entries;
-
-  DailyStats({
-    required this.date,
-    required this.intake,
-    required this.target,
-    required this.entries,
-  });
-
-  double get completionRate => intake / target;
-  bool get goalReached => intake >= target;
-
-  Map<String, dynamic> toMap() {
-    return {
-      'date': date.toIso8601String(),
-      'intake': intake,
-      'target': target,
-      'entries': entries.map((e) => e.toMap()).toList(),
-    };
-  }
-
-  factory DailyStats.fromMap(Map<String, dynamic> map) {
-    return DailyStats(
-      date: DateTime.parse(map['date']),
-      intake: map['intake'],
-      target: map['target'],
-      entries: (map['entries'] as List)
-          .map((e) => IntakeEntry.fromMap(e))
-          .toList(),
-    );
-  }
-}
-
-class IntakeEntry {
-  final DateTime timestamp;
-  final int milliliters;
-  final String beverageType;
-
-  IntakeEntry({
-    required this.timestamp,
-    required this.milliliters,
-    required this.beverageType,
-  });
-
-  Map<String, dynamic> toMap() {
-    return {
-      'timestamp': timestamp.toIso8601String(),
-      'milliliters': milliliters,
-      'beverageType': beverageType,
-    };
-  }
-
-  factory IntakeEntry.fromMap(Map<String, dynamic> map) {
-    return IntakeEntry(
-      timestamp: DateTime.parse(map['timestamp']),
-      milliliters: map['milliliters'],
-      beverageType: map['beverageType'],
-    );
-  }
-}
-
-class Achievement {
-  final String id;
-  final String title;
-  final String description;
-  final String iconName;
-  final bool isUnlocked;
-  final DateTime? unlockedAt;
-
-  Achievement({
-    required this.id,
-    required this.title,
-    required this.description,
-    required this.iconName,
-    required this.isUnlocked,
-    this.unlockedAt,
-  });
-
-  static List<Achievement> getDefaultAchievements() {
-    return [
-      Achievement(
-        id: 'first_drop',
-        title: 'First Drop',
-        description: 'Started your hydration journey',
-        iconName: 'medal',
-        isUnlocked: false,
-      ),
-      Achievement(
-        id: 'week_warrior',
-        title: '7 Day Warrior',
-        description: 'Maintained a 7-day streak',
-        iconName: 'fire',
-        isUnlocked: false,
-      ),
-      Achievement(
-        id: 'month_master',
-        title: 'Month Master',
-        description: 'Reached your goal for 30 days',
-        iconName: 'trophy',
-        isUnlocked: false,
-      ),
-      Achievement(
-        id: 'hydration_hero',
-        title: 'Hydration Hero',
-        description: 'Drank 100 liters total',
-        iconName: 'star',
-        isUnlocked: false,
-      ),
-      Achievement(
-        id: 'early_bird',
-        title: 'Early Bird',
-        description: 'Drank water within 30 minutes of waking up for 7 days',
-        iconName: 'sun',
-        isUnlocked: false,
-      ),
-      Achievement(
-        id: 'perfect_week',
-        title: 'Perfect Week',
-        description: 'Hit 100% of goal every day for a week',
-        iconName: 'check_circle',
-        isUnlocked: false,
-      ),
+    final weekStart = Dates.startOfWeek(today);
+    final week = [
+      for (var i = 0; i < 7; i++) dayTotal(Dates.addDays(weekStart, i)),
     ];
-  }
+    final last30 = [
+      for (var i = 29; i >= 0; i--) dayTotal(Dates.addDays(today, -i)),
+    ];
 
-  Map<String, dynamic> toMap() {
-    return {
-      'id': id,
-      'title': title,
-      'description': description,
-      'iconName': iconName,
-      'isUnlocked': isUnlocked,
-      'unlockedAt': unlockedAt?.toIso8601String(),
-    };
-  }
+    final monthStart = Dates.startOfMonth(today);
+    var monthTotal = 0;
+    totals.forEach((day, ml) {
+      if (!day.isBefore(monthStart) && !day.isAfter(today)) monthTotal += ml;
+    });
 
-  factory Achievement.fromMap(Map<String, dynamic> map) {
-    return Achievement(
-      id: map['id'],
-      title: map['title'],
-      description: map['description'],
-      iconName: map['iconName'],
-      isUnlocked: map['isUnlocked'],
-      unlockedAt: map['unlockedAt'] != null
-          ? DateTime.parse(map['unlockedAt'])
-          : null,
+    final windowStart = last30.first.day;
+    final byBeverage = <String, int>{};
+    final byDayPart = <DayPart, int>{};
+    final earlyBirdDates = <DateTime>{};
+    for (final intake in intakes) {
+      final day = Dates.startOfDay(intake.timestamp);
+      if (intake.timestamp.hour < 8) earlyBirdDates.add(day);
+      if (day.isBefore(windowStart) || day.isAfter(today)) continue;
+      byBeverage[intake.beverageType] =
+          (byBeverage[intake.beverageType] ?? 0) + intake.milliliters;
+      final part = DayPart.of(intake.timestamp);
+      byDayPart[part] = (byDayPart[part] ?? 0) + intake.milliliters;
+    }
+
+    final bestMl = totals.values.fold<int>(0, (a, b) => a > b ? a : b);
+
+    return AnalyticsSummary(
+      goalMl: goalMl,
+      week: week,
+      last30: last30,
+      monthTotalMl: monthTotal,
+      monthDaysElapsed: today.day,
+      currentStreak: StreakCalculator.current(
+        totals,
+        goalMl: goalMl,
+        today: today,
+      ),
+      longestStreak: StreakCalculator.longest(totals, goalMl: goalMl),
+      goalDaysThisWeek: week.where((d) => !d.isFuture && d.ml >= goalMl).length,
+      goalDaysLast30: last30.where((d) => d.ml >= goalMl).length,
+      byBeverage: byBeverage,
+      byDayPart: byDayPart,
+      bestDayRatio: goalMl > 0 ? bestMl / goalMl : 0,
+      earlyBirdDays: earlyBirdDates.length,
     );
   }
+
+  int get weekTotalMl => week.fold(0, (sum, d) => sum + d.ml);
+
+  bool get weekHasData => week.any((d) => d.ml > 0);
+
+  /// Average per day so far this month.
+  int get dailyAverageMl =>
+      monthDaysElapsed == 0 ? 0 : (monthTotalMl / monthDaysElapsed).round();
+
+  /// Day with the most water this week (earliest wins a tie).
+  DayTotal? get bestDayThisWeek {
+    DayTotal? best;
+    for (final d in week) {
+      if (d.ml > 0 && (best == null || d.ml > best.ml)) best = d;
+    }
+    return best;
+  }
+
+  /// Part of the day with the most water over the last 30 days.
+  DayPart? get topDayPart {
+    DayPart? top;
+    var topMl = 0;
+    byDayPart.forEach((part, ml) {
+      if (ml > topMl) {
+        top = part;
+        topMl = ml;
+      }
+    });
+    return top;
+  }
+
+  /// Days in the last 30 on which anything was logged.
+  int get daysTracked30 => last30.where((d) => d.ml > 0).length;
 }

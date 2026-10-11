@@ -30,10 +30,7 @@ class DefaultFirebaseOptions {
           'you can reconfigure this by running the FlutterFire CLI again.',
         );
       case TargetPlatform.windows:
-        throw UnsupportedError(
-          'DefaultFirebaseOptions have not been configured for windows - '
-          'you can reconfigure this by running the FlutterFire CLI again.',
-        );
+        return windows;
       case TargetPlatform.linux:
         throw UnsupportedError(
           'DefaultFirebaseOptions have not been configured for linux - '
@@ -47,6 +44,16 @@ class DefaultFirebaseOptions {
   }
 
   static const FirebaseOptions web = FirebaseOptions(
+    apiKey: 'AIzaSyDOFC_fWoOvTZldZO341ifWRDDMyabuJYY',
+    appId: '1:330540014281:web:a4d42c6075d709da0a0b18',
+    messagingSenderId: '330540014281',
+    projectId: 'h2orbit-80683',
+    authDomain: 'h2orbit-80683.firebaseapp.com',
+    storageBucket: 'h2orbit-80683.firebasestorage.app',
+    measurementId: 'G-80CH3XKNJC',
+  );
+
+  static const FirebaseOptions windows = FirebaseOptions(
     apiKey: 'AIzaSyDOFC_fWoOvTZldZO341ifWRDDMyabuJYY',
     appId: '1:330540014281:web:a4d42c6075d709da0a0b18',
     messagingSenderId: '330540014281',
@@ -70,7 +77,8 @@ class DefaultFirebaseOptions {
     messagingSenderId: '330540014281',
     projectId: 'h2orbit-80683',
     storageBucket: 'h2orbit-80683.firebasestorage.app',
-    iosClientId: '330540014281-8k9hasd9i9rkpvhrrl6hnhmkh7r88ol5.apps.googleusercontent.com',
+    iosClientId:
+        '330540014281-8k9hasd9i9rkpvhrrl6hnhmkh7r88ol5.apps.googleusercontent.com',
     iosBundleId: 'com.example.h2orbit',
   );
 }

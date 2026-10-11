@@ -1,831 +1,604 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:font_awesome_flutter/font_awesome_flutter.dart';
-import 'package:h2orbit/models/user_model.dart';
+import 'package:h2orbit/controllers/home_controller.dart';
+import 'package:h2orbit/models/beverage_model.dart';
 import 'package:h2orbit/models/water_intake_model.dart';
-import 'package:h2orbit/services/ai_prediction_service.dart';
-import 'package:h2orbit/services/firebase_service.dart';
 import 'package:h2orbit/services/achievement_manager.dart';
+import 'package:h2orbit/services/auth_service.dart';
+import 'package:h2orbit/services/firebase_service.dart';
+import 'package:h2orbit/services/notification_service.dart';
+import 'package:h2orbit/services/weather_service.dart';
+import 'package:h2orbit/utils/breakpoints.dart';
+import 'package:h2orbit/utils/helpers.dart';
+import 'package:h2orbit/utils/snackbar.dart';
 import 'package:h2orbit/utils/theme.dart';
 import 'package:h2orbit/widgets/beverage_card.dart';
+import 'package:h2orbit/widgets/custom_drink_sheet.dart';
 import 'package:h2orbit/widgets/glass_container.dart';
 import 'package:h2orbit/widgets/glass_drawer.dart';
 import 'package:h2orbit/widgets/insight_card.dart';
-import 'package:h2orbit/widgets/progress_ring.dart';
+import 'package:h2orbit/widgets/intake_log_tile.dart';
+import 'package:h2orbit/widgets/ocean_scaffold.dart';
+import 'package:h2orbit/widgets/side_rail.dart';
 import 'package:h2orbit/widgets/water_wave_animation.dart';
-import 'dart:async';
+import 'package:h2orbit/widgets/weather_card.dart';
+import 'package:provider/provider.dart';
 
-class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+class HomeScreen extends StatelessWidget {
+  /// Replaces `DateTime.now` (used by tests and screenshots).
+  final DateTime Function()? clock;
+
+  const HomeScreen({super.key, this.clock});
 
   @override
-  State<HomeScreen> createState() => _HomeScreenState();
+  Widget build(BuildContext context) {
+    final userId = context.read<AuthService>().userId!;
+
+    return ChangeNotifierProvider(
+      create: (context) => HomeController(
+        userId: userId,
+        repository: context.read<HydrationRepository>(),
+        achievements: AchievementManager(
+          userId: userId,
+          notifications: context.read<NotificationGateway>(),
+        ),
+        weather: context.read<WeatherProvider?>(),
+        clock: clock,
+      )..start(),
+      child: const _HomeView(),
+    );
+  }
 }
 
-class _HomeScreenState extends State<HomeScreen>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _waveController;
-  final String userId = FirebaseAuth.instance.currentUser!.uid;
-  final FirebaseService _firebaseService = FirebaseService();
-  final AchievementManager _achievementManager = AchievementManager();
+class _HomeView extends StatefulWidget {
+  const _HomeView();
 
-  StreamSubscription? _intakeSubscription;
+  @override
+  State<_HomeView> createState() => _HomeViewState();
+}
 
-  int totalIntakeToday = 0;
-  int targetGlasses = 8;
-  int dailyGoalMl = 2000;
-  UserModel? currentUser;
-  bool _isLoading = true;
-  bool _isRefreshing = false;
-  String _aiPrediction = '';
-  int _currentStreak = 0;
-  int _totalGlassesAllTime = 0;
-
-  final List<Map<String, dynamic>> beverages = [
-    {
-      'name': 'Water',
-      'icon': FontAwesomeIcons.glassWater,
-      'ml': 250,
-      'type': 'water',
-    },
-    {
-      'name': 'Juice',
-      'icon': FontAwesomeIcons.wineGlass,
-      'ml': 200,
-      'type': 'juice',
-    },
-    {'name': 'Tea', 'icon': FontAwesomeIcons.mugHot, 'ml': 150, 'type': 'tea'},
-    {
-      'name': 'Coffee',
-      'icon': FontAwesomeIcons.mugSaucer,
-      'ml': 150,
-      'type': 'coffee',
-    },
-  ];
-
+class _HomeViewState extends State<_HomeView> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
-    _waveController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 3),
-    )..repeat();
-    _initialize();
-  }
-
-  Future<void> _initialize() async {
-    await _achievementManager.initialize();
-    await _loadUserData();
-    _listenToIntakeChanges();
-  }
-
-  Future<void> _loadUserData() async {
-    try {
-      final user = await _firebaseService.getUser(userId);
-      if (user != null && mounted) {
-        setState(() {
-          currentUser = user;
-          targetGlasses = user.dailyGlassTarget;
-          dailyGoalMl = targetGlasses * 250;
-        });
-        debugPrint(
-          'Loaded user data: targetGlasses=$targetGlasses, dailyGoalMl=$dailyGoalMl',
-        );
-        await _updateAIPrediction();
-        await _loadStreakData();
-      }
-    } catch (e) {
-      debugPrint('Error loading user data: $e');
-    } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
-    }
-  }
-
-  Future<void> _loadStreakData() async {
-    try {
-      final streak = await _firebaseService.getCurrentStreak(userId);
-      if (mounted) {
-        setState(() => _currentStreak = streak);
-      }
-    } catch (e) {
-      debugPrint('Error loading streak data: $e');
-    }
-  }
-
-  void _listenToIntakeChanges() {
-    _intakeSubscription?.cancel();
-    _intakeSubscription = _firebaseService
-        .getTodayIntakeStream(userId)
-        .listen(
-          (intakes) async {
-            if (!mounted) return;
-
-            int total = 0;
-            int totalGlasses = intakes.length;
-
-            for (var intake in intakes) {
-              total += intake.milliliters;
-            }
-
-            final previousTotal = totalIntakeToday;
-
-            debugPrint(
-              'Stream update: total=$total ml, glasses=$totalGlasses, dailyGoal=$dailyGoalMl ml',
-            );
-
-            // Force setState to update UI
-            if (mounted) {
-              setState(() {
-                totalIntakeToday = total;
-                _totalGlassesAllTime = totalGlasses;
-              });
-            }
-
-            // Check achievements
-            await _checkAllAchievements(
-              previousTotal: previousTotal,
-              currentTotal: total,
-              totalGlasses: totalGlasses,
-            );
-
-            await _updateAIPrediction();
-          },
-          onError: (error) {
-            debugPrint('Error listening to intake changes: $error');
-          },
-        );
-  }
-
-  Future<void> _checkAllAchievements({
-    required int previousTotal,
-    required int currentTotal,
-    required int totalGlasses,
-  }) async {
-    try {
-      if (currentTotal >= dailyGoalMl && previousTotal < dailyGoalMl) {
-        await _achievementManager.checkDailyGoal(currentTotal, dailyGoalMl);
-      }
-
-      await _achievementManager.checkOverachiever(currentTotal, dailyGoalMl);
-      await _loadStreakData();
-      await _achievementManager.checkStreakAchievement(_currentStreak);
-      await _achievementManager.checkGlassMilestone(totalGlasses);
-    } catch (e) {
-      debugPrint('Error checking achievements: $e');
-    }
-  }
-
-  Future<void> _updateAIPrediction() async {
-    if (currentUser == null) return;
-
-    try {
-      final prediction = await AIPredictionService.getPrediction(
-        currentUser,
-        totalIntakeToday,
-        dailyGoalMl,
-      );
-      if (mounted) {
-        setState(() {
-          _aiPrediction = prediction;
-        });
-      }
-    } catch (e) {
-      debugPrint('Error updating AI prediction: $e');
-    }
-  }
-
-  Future<void> _refreshData() async {
-    if (_isRefreshing) return;
-
-    setState(() => _isRefreshing = true);
-
-    try {
-      await _loadUserData();
-      await _loadStreakData();
-      await _updateAIPrediction();
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: const [
-                Icon(Icons.check_circle, color: Colors.white, size: 20),
-                SizedBox(width: 12),
-                Text('Data refreshed successfully!'),
-              ],
-            ),
-            backgroundColor: AppTheme.oceanBlue,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            margin: const EdgeInsets.all(16),
-            duration: const Duration(seconds: 2),
-          ),
-        );
-      }
-    } catch (e) {
-      debugPrint('Error refreshing data: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: const [
-                Icon(Icons.error_outline, color: Colors.white, size: 20),
-                SizedBox(width: 12),
-                Text('Failed to refresh data'),
-              ],
-            ),
-            backgroundColor: Colors.red,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            margin: const EdgeInsets.all(16),
-          ),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isRefreshing = false);
-      }
-    }
-  }
-
-  Future<void> _addWaterIntake(int ml, String beverageType) async {
-    try {
-      const multipliers = {
-        'water': 1.0,
-        'juice': 0.9,
-        'tea': 0.8,
-        'coffee': 0.7,
-      };
-      final hydrationValue = ml * (multipliers[beverageType] ?? 1.0);
-
-      final intake = WaterIntakeModel(
-        id: '',
-        userId: userId,
-        timestamp: DateTime.now(),
-        milliliters: ml,
-        beverageType: beverageType,
-        hydrationValue: hydrationValue,
-      );
-
-      debugPrint('Adding water intake: $ml ml of $beverageType');
-      await _firebaseService.addWaterIntake(intake);
-      debugPrint('Water intake added successfully');
-
-      await _achievementManager.checkEarlyBird();
-      await _achievementManager.checkNightOwl();
-
-      if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Row(
-            children: [
-              const Icon(Icons.check_circle, color: Colors.white, size: 20),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  'Added $ml ml of $beverageType!',
-                  style: const TextStyle(fontSize: 14),
-                ),
-              ),
-            ],
-          ),
-          backgroundColor: AppTheme.oceanBlue,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-          margin: const EdgeInsets.all(16),
-          duration: const Duration(seconds: 2),
-        ),
-      );
-    } catch (e) {
-      debugPrint('Error adding water intake: $e');
-      if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Row(
-            children: const [
-              Icon(Icons.error_outline, color: Colors.white, size: 20),
-              SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  'Failed to add intake. Please try again.',
-                  style: TextStyle(fontSize: 14),
-                ),
-              ),
-            ],
-          ),
-          backgroundColor: Colors.red,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-          margin: const EdgeInsets.all(16),
-        ),
-      );
-    }
-  }
-
-  void _openDrawer() {
-    showGeneralDialog(
-      context: context,
-      barrierDismissible: true,
-      barrierLabel: 'Drawer',
-      barrierColor: Colors.black54,
-      transitionDuration: const Duration(milliseconds: 300),
-      pageBuilder: (context, animation, secondaryAnimation) {
-        return SlideTransition(
-          position: Tween<Offset>(begin: const Offset(1, 0), end: Offset.zero)
-              .animate(
-                CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
-              ),
-          child: GlassDrawer(currentStreak: _currentStreak),
-        );
-      },
-    );
+    WidgetsBinding.instance.addObserver(this);
   }
 
   @override
   void dispose() {
-    _waveController.dispose();
-    _intakeSubscription?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) {
-    if (_isLoading) {
-      return Scaffold(
-        body: Container(
-          decoration: const BoxDecoration(gradient: AppTheme.oceanGradient),
-          child: const Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                CircularProgressIndicator(
-                  color: AppTheme.lightCyan,
-                  strokeWidth: 3,
-                ),
-                SizedBox(height: 16),
-                Text(
-                  'Loading...',
-                  style: TextStyle(color: Colors.white70, fontSize: 16),
-                ),
-              ],
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      context.read<HomeController>().onResume();
+    }
+  }
+
+  Future<void> _addDrink(int ml, String type) async {
+    final home = context.read<HomeController>();
+    final label = BeverageModel.labelFor(type).toLowerCase();
+    try {
+      final saved = await home.addDrink(ml, type);
+      if (!mounted) return;
+      showAppSnack(
+        context,
+        'Added $ml ml of $label',
+        actionLabel: 'UNDO',
+        onAction: () => home.removeDrink(saved),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      showAppSnack(
+        context,
+        "Couldn't save that drink. Check your connection and try again.",
+        isError: true,
+      );
+    }
+  }
+
+  Future<void> _removeDrink(WaterIntakeModel intake) async {
+    final home = context.read<HomeController>();
+    try {
+      await home.removeDrink(intake);
+      if (!mounted) return;
+      showAppSnack(
+        context,
+        'Removed ${intake.milliliters} ml',
+        actionLabel: 'UNDO',
+        onAction: () => home.restoreDrink(intake),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      showAppSnack(context, "Couldn't remove that entry.", isError: true);
+    }
+  }
+
+  Future<void> _addCustom() async {
+    final drink = await showCustomDrinkSheet(context);
+    if (drink != null) await _addDrink(drink.ml, drink.type);
+  }
+
+  void _openDrawer() {
+    final home = context.read<HomeController>();
+    final auth = context.read<AuthService>();
+    showGeneralDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'Close menu',
+      barrierColor: Colors.black54,
+      transitionDuration: const Duration(milliseconds: 280),
+      pageBuilder: (context, animation, secondaryAnimation) => SlideTransition(
+        position: Tween<Offset>(begin: const Offset(1, 0), end: Offset.zero)
+            .animate(
+              CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
             ),
-          ),
+        child: GlassDrawer(
+          currentStreak: home.streak,
+          userName: home.user?.name ?? '',
+          email: auth.email ?? '',
         ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final home = context.watch<HomeController>();
+
+    if (home.loading) {
+      return const OceanScaffold(
+        showBack: false,
+        section: AppSection.home,
+        body: Center(child: CircularProgressIndicator()),
       );
     }
 
-    final progress = dailyGoalMl > 0
-        ? (totalIntakeToday / dailyGoalMl).clamp(0.0, 1.0)
-        : 0.0;
-    final glassesConsumed = (totalIntakeToday / 250).floor();
+    final tips = home.tips.take(2).toList();
+    final log = home.log;
+    final wide = Breakpoints.isWide(context);
 
-    debugPrint(
-      'UI Render: totalIntake=$totalIntakeToday, progress=$progress, glasses=$glassesConsumed',
+    final quickAdd = GridView(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 3,
+        mainAxisSpacing: 12,
+        crossAxisSpacing: 12,
+        mainAxisExtent: 124,
+      ),
+      children: [
+        for (final drink in BeverageModel.quickAdd)
+          BeverageCard(
+            name: drink.name,
+            icon: drink.icon,
+            ml: drink.milliliters,
+            onTap: () => _addDrink(drink.milliliters, drink.type),
+          ),
+      ],
     );
-
-    return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(gradient: AppTheme.oceanGradient),
-        child: SafeArea(
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text(
-                      'H₂Orbit',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 28,
-                        color: Colors.white,
-                        letterSpacing: 0.5,
-                      ),
-                    ),
-                    Row(
-                      children: [
-                        if (_currentStreak > 0)
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 6,
-                            ),
-                            margin: const EdgeInsets.only(right: 8),
-                            decoration: BoxDecoration(
-                              color: Colors.orange.withOpacity(0.2),
-                              borderRadius: BorderRadius.circular(20),
-                              border: Border.all(
-                                color: Colors.orange.withOpacity(0.3),
-                                width: 1,
-                              ),
-                            ),
-                            child: Row(
-                              children: [
-                                const Icon(
-                                  Icons.local_fire_department,
-                                  color: Colors.orange,
-                                  size: 16,
-                                ),
-                                const SizedBox(width: 4),
-                                Text(
-                                  '$_currentStreak',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 14,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        IconButton(
-                          icon: const Icon(
-                            Icons.menu_rounded,
-                            color: Colors.white,
-                            size: 28,
-                          ),
-                          onPressed: _openDrawer,
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
+    final tipCards = [
+      for (final tip in tips) ...[
+        InsightCard.fromTip(tip),
+        const SizedBox(height: 12),
+      ],
+    ];
+    final logTitle = SectionTitle(
+      "Today's log",
+      trailing: log.isEmpty
+          ? null
+          : Text(
+              '${log.length} ${log.length == 1 ? 'drink' : 'drinks'}',
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.65),
+                fontSize: 13,
               ),
-              Expanded(
-                child: RefreshIndicator(
-                  onRefresh: _refreshData,
-                  color: AppTheme.lightCyan,
-                  backgroundColor: AppTheme.deepCyan,
-                  child: SingleChildScrollView(
-                    physics: const AlwaysScrollableScrollPhysics(),
-                    padding: const EdgeInsets.all(20),
-                    child: Column(
+            ),
+    );
+    final logTiles = [
+      if (log.isEmpty)
+        const _EmptyLog()
+      else
+        for (final intake in log) ...[
+          IntakeLogTile(intake: intake, onDelete: () => _removeDrink(intake)),
+          const SizedBox(height: 10),
+        ],
+    ];
+
+    return OceanScaffold(
+      showBack: false,
+      section: AppSection.home,
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _addCustom,
+        backgroundColor: AppTheme.deepCyan,
+        foregroundColor: Colors.white,
+        elevation: 0,
+        highlightElevation: 0,
+        shape: StadiumBorder(
+          side: BorderSide(
+            color: AppTheme.lightCyan.withValues(alpha: 0.8),
+            width: 1.5,
+          ),
+        ),
+        icon: const Icon(Icons.add_rounded, color: AppTheme.lightCyan),
+        label: const Text(
+          'Custom',
+          style: TextStyle(fontWeight: FontWeight.w700),
+        ),
+      ),
+      body: wide
+          ? Padding(
+              padding: const EdgeInsets.fromLTRB(28, 12, 28, 0),
+              child: Column(
+                children: [
+                  const _Header(),
+                  if (home.loadError != null) ...[
+                    const SizedBox(height: 12),
+                    _ErrorBanner(message: home.loadError!),
+                  ],
+                  const SizedBox(height: 20),
+                  Expanded(
+                    child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        GlassContainer(
-                          child: Column(
+                        SizedBox(
+                          width: 400,
+                          child: ListView(
+                            padding: const EdgeInsets.only(bottom: 110),
                             children: [
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        const Text(
-                                          'Today\'s Progress',
-                                          style: TextStyle(
-                                            color: Colors.white70,
-                                            fontSize: 13,
-                                            fontWeight: FontWeight.w500,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 8),
-                                        Text(
-                                          '$glassesConsumed / $targetGlasses',
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 32,
-                                            fontWeight: FontWeight.bold,
-                                            height: 1.0,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          'glasses',
-                                          style: TextStyle(
-                                            color: Colors.white.withOpacity(
-                                              0.6,
-                                            ),
-                                            fontSize: 14,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 8),
-                                        Text(
-                                          '${totalIntakeToday}ml / ${dailyGoalMl}ml',
-                                          style: const TextStyle(
-                                            color: AppTheme.lightCyan,
-                                            fontSize: 13,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  const SizedBox(width: 16),
-                                  SizedBox(
-                                    width: 100,
-                                    height: 100,
-                                    child: ProgressRing(
-                                      progress: progress,
-                                      key: ValueKey(
-                                        'progress_$totalIntakeToday',
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 24),
-                              WaterWaveAnimation(
-                                progress: progress,
-                                controller: _waveController,
-                                key: ValueKey('wave_$totalIntakeToday'),
-                              ),
+                              const _HeroCard(),
+                              if (home.weather != null) ...[
+                                const SizedBox(height: 20),
+                                WeatherCard(weather: home.weather!),
+                              ],
                             ],
                           ),
                         ),
-                        const SizedBox(height: 28),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text(
-                              'Quick Add',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 20,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            if (_isRefreshing)
-                              const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: AppTheme.lightCyan,
-                                ),
-                              ),
-                          ],
-                        ),
-                        const SizedBox(height: 16),
-                        GridView.builder(
-                          shrinkWrap: true,
-                          physics: const NeverScrollableScrollPhysics(),
-                          gridDelegate:
-                              const SliverGridDelegateWithFixedCrossAxisCount(
-                                crossAxisCount: 2,
-                                crossAxisSpacing: 12,
-                                mainAxisSpacing: 12,
-                                childAspectRatio: 1.3,
-                              ),
-                          itemCount: beverages.length,
-                          itemBuilder: (context, index) {
-                            final beverage = beverages[index];
-                            return BeverageCard(
-                              name: beverage['name'],
-                              icon: beverage['icon'],
-                              ml: beverage['ml'],
-                              onTap: () => _addWaterIntake(
-                                beverage['ml'],
-                                beverage['type'],
-                              ),
-                            );
-                          },
-                        ),
-                        const SizedBox(height: 28),
-                        const Text(
-                          'AI Insights',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        if (_aiPrediction.isNotEmpty) ...[
-                          InsightCard(
-                            icon: FontAwesomeIcons.lightbulb,
-                            title: 'Smart Recommendation',
-                            description: _aiPrediction,
-                          ),
-                          const SizedBox(height: 12),
-                        ],
-                        InsightCard(
-                          icon: progress >= 1.0
-                              ? FontAwesomeIcons.trophy
-                              : progress >= 0.5
-                              ? FontAwesomeIcons.fire
-                              : FontAwesomeIcons.droplet,
-                          title: progress >= 1.0
-                              ? 'Goal Achieved! 🎉'
-                              : progress >= 0.5
-                              ? 'Keep It Up!'
-                              : 'Let\'s Start!',
-                          description: progress >= 1.0
-                              ? 'Amazing! You\'ve reached your daily goal!'
-                              : progress >= 0.5
-                              ? 'You\'re doing great! Keep hydrating!'
-                              : 'Let\'s boost your hydration today!',
-                        ),
-                        if (_currentStreak >= 3 ||
-                            _totalGlassesAllTime >= 50) ...[
-                          const SizedBox(height: 12),
-                          GlassContainer(
-                            padding: const EdgeInsets.all(16),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
+                        const SizedBox(width: 28),
+                        Expanded(
+                          child: RefreshIndicator(
+                            onRefresh: home.refresh,
+                            color: AppTheme.lightCyan,
+                            backgroundColor: AppTheme.deepCyan,
+                            child: ListView(
+                              physics: const AlwaysScrollableScrollPhysics(),
+                              padding: const EdgeInsets.only(bottom: 110),
                               children: [
-                                Row(
-                                  children: const [
-                                    Icon(
-                                      Icons.emoji_events,
-                                      color: Colors.amber,
-                                      size: 20,
-                                    ),
-                                    SizedBox(width: 8),
-                                    Text(
-                                      'Achievements',
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 12),
-                                if (_currentStreak >= 3)
-                                  _buildAchievementChip(
-                                    '🔥 $_currentStreak Day Streak',
-                                    Colors.orange,
-                                  ),
-                                if (_totalGlassesAllTime >= 50)
-                                  _buildAchievementChip(
-                                    '💧 $_totalGlassesAllTime Glasses',
-                                    AppTheme.lightCyan,
-                                  ),
+                                const SectionTitle('Quick add'),
+                                quickAdd,
+                                const SizedBox(height: 28),
+                                const SectionTitle('Smart tips'),
+                                ...tipCards,
+                                const SizedBox(height: 16),
+                                logTitle,
+                                ...logTiles,
                               ],
                             ),
                           ),
-                        ],
-                        const SizedBox(height: 100),
+                        ),
                       ],
                     ),
                   ),
-                ),
+                ],
               ),
-            ],
-          ),
-        ),
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _showCustomIntakeDialog,
-        backgroundColor: AppTheme.lightCyan,
-        elevation: 6,
-        icon: const Icon(FontAwesomeIcons.plus, color: Colors.white, size: 20),
-        label: const Text(
-          'Custom',
-          style: TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.bold,
-            fontSize: 16,
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildAchievementChip(String text, Color color) {
-    return Container(
-      margin: const EdgeInsets.only(top: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.2),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: color.withOpacity(0.3), width: 1),
-      ),
-      child: Text(
-        text,
-        style: TextStyle(
-          color: color,
-          fontWeight: FontWeight.w600,
-          fontSize: 13,
-        ),
-      ),
-    );
-  }
-
-  void _showCustomIntakeDialog() {
-    int customMl = 250;
-    showDialog(
-      context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          backgroundColor: AppTheme.deepCyan,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(24),
-          ),
-          title: const Text(
-            'Add Custom Amount',
-            style: TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.bold,
-              fontSize: 20,
+            )
+          : RefreshIndicator(
+              onRefresh: home.refresh,
+              color: AppTheme.lightCyan,
+              backgroundColor: AppTheme.deepCyan,
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 110),
+                children: [
+                  _Header(onMenu: _openDrawer),
+                  if (home.loadError != null) ...[
+                    const SizedBox(height: 12),
+                    _ErrorBanner(message: home.loadError!),
+                  ],
+                  const SizedBox(height: 20),
+                  const _HeroCard(),
+                  const SizedBox(height: 28),
+                  const SectionTitle('Quick add'),
+                  quickAdd,
+                  if (home.weather != null) ...[
+                    const SizedBox(height: 24),
+                    WeatherCard(weather: home.weather!),
+                  ],
+                  const SizedBox(height: 28),
+                  const SectionTitle('Smart tips'),
+                  ...tipCards,
+                  const SizedBox(height: 16),
+                  logTitle,
+                  ...logTiles,
+                ],
+              ),
             ),
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
+    );
+  }
+}
+
+class _Header extends StatelessWidget {
+  /// Null on wide windows, where the side rail replaces the menu.
+  final VoidCallback? onMenu;
+
+  const _Header({this.onMenu});
+
+  @override
+  Widget build(BuildContext context) {
+    final home = context.watch<HomeController>();
+
+    return Row(
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const SizedBox(height: 8),
               Text(
-                '$customMl ml',
+                '${Fmt.greeting(home.now)},',
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.75),
+                  fontSize: 14,
+                ),
+              ),
+              Text(
+                home.user?.firstName ?? 'there',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
-                  color: AppTheme.lightCyan,
-                  fontSize: 48,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 1.0,
-                ),
-              ),
-              const SizedBox(height: 24),
-              SliderTheme(
-                data: SliderThemeData(
-                  activeTrackColor: AppTheme.lightCyan,
-                  inactiveTrackColor: Colors.white.withOpacity(0.2),
-                  thumbColor: Colors.white,
-                  overlayColor: AppTheme.lightCyan.withOpacity(0.2),
-                  valueIndicatorColor: AppTheme.lightCyan,
-                  thumbShape: const RoundSliderThumbShape(
-                    enabledThumbRadius: 12,
-                  ),
-                  trackHeight: 6,
-                ),
-                child: Slider(
-                  value: customMl.toDouble(),
-                  min: 50,
-                  max: 1000,
-                  divisions: 19,
-                  label: '$customMl ml',
-                  onChanged: (v) {
-                    setDialogState(() => customMl = v.toInt());
-                  },
-                ),
-              ),
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 8,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(
-                  '≈ ${(customMl / 250).toStringAsFixed(1)} glasses',
-                  style: const TextStyle(
-                    color: Colors.white70,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w500,
-                  ),
+                  color: Colors.white,
+                  fontSize: 26,
+                  fontWeight: FontWeight.w700,
+                  height: 1.15,
                 ),
               ),
             ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text(
-                'Cancel',
-                style: TextStyle(color: Colors.white60, fontSize: 16),
+        ),
+        if (home.streak > 0)
+          Semantics(
+            label: '${home.streak} day streak',
+            child: Container(
+              margin: const EdgeInsets.only(right: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: AppTheme.streak.withValues(alpha: 0.2),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: AppTheme.streak.withValues(alpha: 0.4),
+                ),
+              ),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.local_fire_department_rounded,
+                    color: AppTheme.streak,
+                    size: 18,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    '${home.streak}',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
               ),
             ),
-            ElevatedButton(
-              onPressed: () {
-                Navigator.pop(dialogContext);
-                _addWaterIntake(customMl, 'water');
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppTheme.lightCyan,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 28,
-                  vertical: 14,
-                ),
-                elevation: 0,
+          ),
+        if (onMenu != null)
+          Material(
+            color: Colors.white.withValues(alpha: 0.12),
+            shape: const CircleBorder(),
+            child: IconButton(
+              tooltip: 'Menu',
+              icon: const Icon(Icons.menu_rounded, color: Colors.white),
+              onPressed: onMenu,
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _HeroCard extends StatelessWidget {
+  const _HeroCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final home = context.watch<HomeController>();
+
+    return GlassContainer(
+      padding: const EdgeInsets.fromLTRB(20, 24, 20, 20),
+      borderRadius: BorderRadius.circular(28),
+      child: Column(
+        children: [
+          LayoutBuilder(
+            builder: (context, constraints) => WaterOrb(
+              progress: home.progress,
+              size: math.min(constraints.maxWidth, 230),
+              caption: home.goalReached ? 'goal reached' : 'of daily goal',
+            ),
+          ),
+          const SizedBox(height: 22),
+          Row(
+            children: [
+              _Stat(label: 'Drunk', value: Fmt.ml(home.totalMl)),
+              _Divider(),
+              _Stat(label: 'Goal', value: Fmt.ml(home.goalMl)),
+              _Divider(),
+              home.goalReached
+                  ? const _Stat(
+                      label: 'Status',
+                      value: 'Done!',
+                      color: AppTheme.success,
+                    )
+                  : _Stat(label: 'To go', value: Fmt.ml(home.remainingMl)),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Text(
+            home.goalReached
+                ? (home.totalMl > home.goalMl
+                      ? '${Fmt.ml(home.totalMl - home.goalMl)} over your goal'
+                      : 'Right on your goal')
+                : '${Fmt.glasses(home.totalMl)} of ${Fmt.glasses(home.goalMl)} glasses',
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.7),
+              fontSize: 13,
+            ),
+          ),
+          if (home.weatherBonusMl > 0) ...[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: AppTheme.warning.withValues(alpha: 0.18),
+                borderRadius: BorderRadius.circular(20),
               ),
-              child: const Text(
-                'Add',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.wb_sunny_rounded,
+                    color: AppTheme.warning,
+                    size: 16,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    'Goal includes +${Fmt.ml(home.weatherBonusMl)} for the heat',
+                    style: const TextStyle(
+                      color: AppTheme.warning,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _Stat extends StatelessWidget {
+  final String label;
+  final String value;
+  final Color color;
+
+  const _Stat({
+    required this.label,
+    required this.value,
+    this.color = Colors.white,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Column(
+        children: [
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              value,
+              style: TextStyle(
+                color: color,
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            label,
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.6),
+              fontSize: 12,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Divider extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) => Container(
+    width: 1,
+    height: 30,
+    color: Colors.white.withValues(alpha: 0.18),
+  );
+}
+
+class _EmptyLog extends StatelessWidget {
+  const _EmptyLog();
+
+  @override
+  Widget build(BuildContext context) {
+    return GlassContainer(
+      padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 20),
+      child: Center(
+        child: Column(
+          children: [
+            Icon(
+              Icons.water_drop_outlined,
+              size: 36,
+              color: Colors.white.withValues(alpha: 0.5),
+            ),
+            const SizedBox(height: 10),
+            const Text(
+              'Nothing logged yet',
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Tap a drink above to log your first sip.',
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.65),
+                fontSize: 13,
               ),
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _ErrorBanner extends StatelessWidget {
+  final String message;
+
+  const _ErrorBanner({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppTheme.danger.withValues(alpha: 0.18),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppTheme.danger.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.cloud_off_rounded, color: AppTheme.danger, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              message,
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+            ),
+          ),
+        ],
       ),
     );
   }

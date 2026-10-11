@@ -1,12 +1,28 @@
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:h2orbit/domain/achievements.dart';
+import 'package:h2orbit/domain/trend_insights.dart';
+import 'package:h2orbit/models/analytics_model.dart';
+import 'package:h2orbit/models/beverage_model.dart';
+import 'package:h2orbit/services/auth_service.dart';
 import 'package:h2orbit/services/firebase_service.dart';
+import 'package:h2orbit/utils/breakpoints.dart';
+import 'package:h2orbit/utils/constants.dart';
+import 'package:h2orbit/utils/helpers.dart';
 import 'package:h2orbit/utils/theme.dart';
 import 'package:h2orbit/widgets/glass_container.dart';
+import 'package:h2orbit/widgets/goal_bar_chart.dart';
+import 'package:h2orbit/widgets/insight_card.dart';
+import 'package:h2orbit/widgets/ocean_scaffold.dart';
+import 'package:h2orbit/widgets/progress_ring.dart';
+import 'package:h2orbit/widgets/side_rail.dart';
+import 'package:h2orbit/widgets/stat_tile.dart';
+import 'package:provider/provider.dart';
 
 class AnalyticsScreen extends StatefulWidget {
-  const AnalyticsScreen({super.key});
+  /// Replaces `DateTime.now` (used by tests and screenshots).
+  final DateTime Function()? clock;
+
+  const AnalyticsScreen({super.key, this.clock});
 
   @override
   State<AnalyticsScreen> createState() => _AnalyticsScreenState();
@@ -14,792 +30,785 @@ class AnalyticsScreen extends StatefulWidget {
 
 class _AnalyticsScreenState extends State<AnalyticsScreen>
     with SingleTickerProviderStateMixin {
-  final String userId = FirebaseAuth.instance.currentUser!.uid;
-  final FirebaseService _firebaseService = FirebaseService();
+  late final TabController _tabs = TabController(length: 3, vsync: this);
 
-  late TabController _tabController;
-  Map<String, int> weeklyData = {};
-  int monthlyTotal = 0;
-  int currentStreak = 0;
-  bool isLoading = true;
-  String? errorMessage;
+  AnalyticsSummary? _summary;
+  Set<String> _unlocked = const {};
+  bool _loading = true;
+  String? _error;
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
-    _loadAnalytics();
-  }
-
-  Future<void> _loadAnalytics() async {
-    if (!mounted) return;
-    
-    setState(() {
-      isLoading = true;
-      errorMessage = null;
-    });
-
-    try {
-      final weekly = await _firebaseService.getWeeklyStats(userId);
-      final monthly = await _firebaseService.getMonthlyTotal(userId);
-      final streak = await _firebaseService.getCurrentStreak(userId);
-
-      if (mounted) {
-        setState(() {
-          weeklyData = weekly;
-          monthlyTotal = monthly;
-          currentStreak = streak;
-          isLoading = false;
-        });
-      }
-    } catch (e) {
-      debugPrint('Error loading analytics: $e');
-      if (mounted) {
-        setState(() {
-          isLoading = false;
-          errorMessage = 'Failed to load analytics. Please try again.';
-        });
-      }
-    }
+    _load();
   }
 
   @override
   void dispose() {
-    _tabController.dispose();
+    _tabs.dispose();
     super.dispose();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    final repo = context.read<HydrationRepository>();
+    final userId = context.read<AuthService>().userId!;
+    try {
+      final now = (widget.clock ?? DateTime.now)();
+      final today = Dates.startOfDay(now);
+      final user = await repo.getUser(userId);
+      final intakes = await repo.getIntakeBetween(
+        userId,
+        Dates.addDays(today, -AppConstants.historyDays),
+        Dates.nextMidnight(now),
+      );
+      final totals = await repo.getTotals(userId);
+      final goalMl =
+          (user?.dailyGlassTarget ?? AppConstants.defaultWaterTarget) *
+          AppConstants.mlPerGlass;
+      final summary = AnalyticsSummary.from(intakes, goalMl: goalMl, now: now);
+      if (!mounted) return;
+      setState(() {
+        _summary = summary;
+        _unlocked = AchievementCatalog.unlocked(
+          summary,
+          allTimeMl: totals.milliliters,
+        );
+        _loading = false;
+      });
+    } catch (e) {
+      debugPrint('Could not load analytics: $e');
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = "We couldn't load your analytics. Check your connection.";
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(gradient: AppTheme.oceanGradient),
-        child: SafeArea(
-          child: Column(
-            children: [
-              // Header
-              Padding(
-                padding: const EdgeInsets.all(20),
-                child: Row(
-                  children: [
-                    IconButton(
-                      icon: const Icon(
-                        Icons.arrow_back,
-                        color: Colors.white,
-                        size: 28,
-                      ),
-                      onPressed: () => Navigator.pop(context),
-                    ),
-                    const Text(
-                      'Analytics',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const Spacer(),
-                    IconButton(
-                      icon: const Icon(
-                        Icons.refresh,
-                        color: Colors.white,
-                        size: 28,
-                      ),
-                      onPressed: _loadAnalytics,
-                    ),
-                  ],
-                ),
+    return OceanScaffold(
+      title: 'Analytics',
+      section: AppSection.analytics,
+      actions: [
+        IconButton(
+          tooltip: 'Refresh',
+          icon: const Icon(Icons.refresh_rounded, color: Colors.white),
+          onPressed: _loading ? null : _load,
+        ),
+      ],
+      body: Column(
+        children: [
+          Align(
+            alignment: Alignment.centerLeft,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: Breakpoints.isWide(context) ? 460 : double.infinity,
               ),
-
-              // Tab Bar
-              Container(
-                margin: const EdgeInsets.symmetric(horizontal: 20),
+              child: Container(
+                margin: EdgeInsets.fromLTRB(
+                  Breakpoints.isWide(context) ? 28 : 20,
+                  4,
+                  20,
+                  12,
+                ),
+                padding: const EdgeInsets.all(4),
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(12),
+                  color: Colors.white.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(16),
                 ),
                 child: TabBar(
-                  controller: _tabController,
+                  controller: _tabs,
+                  dividerColor: Colors.transparent,
+                  indicatorSize: TabBarIndicatorSize.tab,
                   indicator: BoxDecoration(
                     color: AppTheme.lightCyan,
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  indicatorSize: TabBarIndicatorSize.tab,
-                  labelColor: Colors.white,
-                  unselectedLabelColor: Colors.white60,
+                  labelColor: AppTheme.darkBackground,
+                  unselectedLabelColor: Colors.white70,
                   labelStyle: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 14,
+                    fontFamily: AppTheme.fontFamily,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 13.5,
                   ),
                   tabs: const [
                     Tab(text: 'Overview'),
-                    Tab(text: 'Weekly'),
+                    Tab(text: 'Week'),
                     Tab(text: 'Trends'),
                   ],
                 ),
               ),
-
-              const SizedBox(height: 20),
-
-              // Content
-              Expanded(
-                child: isLoading
-                    ? const Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            CircularProgressIndicator(
-                              color: AppTheme.lightCyan,
-                            ),
-                            SizedBox(height: 16),
-                            Text(
-                              'Loading analytics...',
-                              style: TextStyle(
-                                color: Colors.white70,
-                                fontSize: 16,
-                              ),
-                            ),
-                          ],
-                        ),
-                      )
-                    : errorMessage != null
-                        ? Center(
-                            child: Padding(
-                              padding: const EdgeInsets.all(32),
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  const Icon(
-                                    Icons.error_outline,
-                                    color: Colors.white70,
-                                    size: 64,
-                                  ),
-                                  const SizedBox(height: 16),
-                                  Text(
-                                    errorMessage!,
-                                    style: const TextStyle(
-                                      color: Colors.white70,
-                                      fontSize: 16,
-                                    ),
-                                    textAlign: TextAlign.center,
-                                  ),
-                                  const SizedBox(height: 24),
-                                  ElevatedButton(
-                                    onPressed: _loadAnalytics,
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: AppTheme.lightCyan,
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 32,
-                                        vertical: 16,
-                                      ),
-                                    ),
-                                    child: const Text('Retry'),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          )
-                        : TabBarView(
-                            controller: _tabController,
-                            children: [
-                              _buildOverviewTab(),
-                              _buildWeeklyTab(),
-                              _buildTrendsTab(),
-                            ],
-                          ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildOverviewTab() {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        children: [
-          // Stats Cards
-          Row(
-            children: [
-              Expanded(
-                child: _buildStatCard(
-                  icon: FontAwesomeIcons.fire,
-                  title: 'Current Streak',
-                  value: '$currentStreak',
-                  subtitle: currentStreak == 1 ? 'day' : 'days',
-                  color: Colors.orange,
-                ),
-              ),
-              const SizedBox(width: 15),
-              Expanded(
-                child: _buildStatCard(
-                  icon: FontAwesomeIcons.calendarDays,
-                  title: 'This Month',
-                  value: (monthlyTotal / 1000).toStringAsFixed(1),
-                  subtitle: 'liters',
-                  color: AppTheme.lightCyan,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 15),
-          Row(
-            children: [
-              Expanded(
-                child: _buildStatCard(
-                  icon: FontAwesomeIcons.chartLine,
-                  title: 'Daily Avg',
-                  value: (monthlyTotal / DateTime.now().day / 250)
-                      .toStringAsFixed(1),
-                  subtitle: 'glasses',
-                  color: Colors.green,
-                ),
-              ),
-              const SizedBox(width: 15),
-              Expanded(
-                child: _buildStatCard(
-                  icon: FontAwesomeIcons.trophy,
-                  title: 'Best Day',
-                  value: _getBestDay(),
-                  subtitle: 'this week',
-                  color: Colors.amber,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 30),
-
-          // Achievements
-          GlassContainer(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Row(
-                  children: [
-                    FaIcon(
-                      FontAwesomeIcons.trophy,
-                      color: Colors.amber,
-                      size: 24,
-                    ),
-                    SizedBox(width: 12),
-                    Text(
-                      'Achievements',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 20),
-                _buildAchievement(
-                  FontAwesomeIcons.medal,
-                  'First Drop',
-                  'Started your hydration journey',
-                  true,
-                ),
-                const SizedBox(height: 15),
-                _buildAchievement(
-                  FontAwesomeIcons.fire,
-                  '7 Day Streak',
-                  'Maintained consistency for a week',
-                  currentStreak >= 7,
-                ),
-                const SizedBox(height: 15),
-                _buildAchievement(
-                  FontAwesomeIcons.chartLine,
-                  'Hydration Hero',
-                  'Reached target for 30 days',
-                  currentStreak >= 30,
-                ),
-              ],
             ),
           ),
+          Expanded(child: _content()),
         ],
       ),
     );
   }
 
-  Widget _buildWeeklyTab() {
-    final hasData = weeklyData.values.any((v) => v > 0);
-
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        children: [
-          GlassContainer(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'This Week\'s Progress',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 30),
-                if (!hasData)
-                  const Center(
-                    child: Padding(
-                      padding: EdgeInsets.all(32),
-                      child: Column(
-                        children: [
-                          Icon(
-                            Icons.water_drop_outlined,
-                            color: Colors.white38,
-                            size: 64,
-                          ),
-                          SizedBox(height: 16),
-                          Text(
-                            'No data yet this week',
-                            style: TextStyle(
-                              color: Colors.white70,
-                              fontSize: 16,
-                            ),
-                          ),
-                          SizedBox(height: 8),
-                          Text(
-                            'Start tracking your water intake!',
-                            style: TextStyle(
-                              color: Colors.white54,
-                              fontSize: 14,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  )
-                else
-                  SizedBox(height: 250, child: _buildBarChart()),
-              ],
-            ),
+  Widget _content() {
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    final summary = _summary;
+    if (_error != null || summary == null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.cloud_off_rounded,
+                color: Colors.white70,
+                size: 56,
+              ),
+              const SizedBox(height: 16),
+              Text(
+                _error ?? 'Something went wrong.',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white70, fontSize: 15),
+              ),
+              const SizedBox(height: 20),
+              FilledButton(onPressed: _load, child: const Text('Try again')),
+            ],
           ),
-          const SizedBox(height: 20),
-          if (hasData)
-            GlassContainer(
+        ),
+      );
+    }
+    return TabBarView(
+      controller: _tabs,
+      children: [
+        _OverviewTab(summary: summary, unlocked: _unlocked),
+        _WeekTab(summary: summary),
+        _TrendsTab(summary: summary),
+      ],
+    );
+  }
+}
+
+const _tabPadding = EdgeInsets.fromLTRB(20, 4, 20, 32);
+const _wideTabPadding = EdgeInsets.fromLTRB(28, 4, 28, 32);
+
+/// Two scrolling-free columns used by the tabs on wide windows.
+Widget _twoColumns(List<Widget> left, List<Widget> right, {int leftFlex = 1}) {
+  return Row(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Expanded(
+        flex: leftFlex,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: left,
+        ),
+      ),
+      const SizedBox(width: 24),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: right,
+        ),
+      ),
+    ],
+  );
+}
+
+class _OverviewTab extends StatelessWidget {
+  final AnalyticsSummary summary;
+  final Set<String> unlocked;
+
+  const _OverviewTab({required this.summary, required this.unlocked});
+
+  @override
+  Widget build(BuildContext context) {
+    final s = summary;
+    final elapsedDays = s.week.where((d) => !d.isFuture).length;
+
+    final items = <Widget>[
+      GridView.count(
+        crossAxisCount: 2,
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        mainAxisSpacing: 12,
+        crossAxisSpacing: 12,
+        childAspectRatio: 1.25,
+        children: [
+          StatTile(
+            icon: Icons.local_fire_department_rounded,
+            label: 'Current streak',
+            value: '${s.currentStreak}',
+            unit: s.currentStreak == 1 ? 'day' : 'days',
+            color: AppTheme.streak,
+          ),
+          StatTile(
+            icon: Icons.emoji_events_rounded,
+            label: 'Longest streak',
+            value: '${s.longestStreak}',
+            unit: s.longestStreak == 1 ? 'day' : 'days',
+            color: Colors.amber,
+          ),
+          StatTile(
+            icon: Icons.calendar_month_rounded,
+            label: 'This month',
+            value: Fmt.liters(s.monthTotalMl).replaceAll(' L', ''),
+            unit: 'litres',
+            color: AppTheme.lightCyan,
+          ),
+          StatTile(
+            icon: Icons.show_chart_rounded,
+            label: 'Daily average',
+            value: Fmt.glasses(s.dailyAverageMl),
+            unit: 'glasses',
+            color: AppTheme.success,
+          ),
+        ],
+      ),
+      const SizedBox(height: 20),
+      GlassContainer(
+        child: Row(
+          children: [
+            SizedBox(
+              width: 76,
+              height: 76,
+              child: ProgressRing(
+                progress: elapsedDays == 0
+                    ? 0
+                    : s.goalDaysThisWeek / elapsedDays,
+                strokeWidth: 8,
+                showLabel: false,
+              ),
+            ),
+            const SizedBox(width: 18),
+            Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    'Daily Breakdown',
+                    'Goal days this week',
                     style: TextStyle(
                       color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 16,
                     ),
                   ),
-                  const SizedBox(height: 20),
-                  ...weeklyData.entries.map((entry) {
-                    final progress = entry.value / 2000; // Target 2L per day
-                    return Padding(
-                      padding: const EdgeInsets.only(bottom: 15),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(
-                                entry.key,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.w600,
-                                  fontSize: 14,
-                                ),
-                              ),
-                              Text(
-                                '${(entry.value / 1000).toStringAsFixed(1)}L',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 14,
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(10),
-                            child: LinearProgressIndicator(
-                              value: progress.clamp(0.0, 1.0),
-                              backgroundColor: Colors.white24,
-                              valueColor: AlwaysStoppedAnimation<Color>(
-                                progress >= 1.0
-                                    ? Colors.green
-                                    : AppTheme.lightCyan,
-                              ),
-                              minHeight: 8,
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  }).toList(),
-                ],
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTrendsTab() {
-    final weeklyAvg = weeklyData.values.isEmpty
-        ? 0
-        : weeklyData.values.reduce((a, b) => a + b) / weeklyData.length;
-    final weeklyAvgGlasses = (weeklyAvg / 250).toStringAsFixed(1);
-
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        children: [
-          GlassContainer(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Row(
-                  children: [
-                    FaIcon(
-                      FontAwesomeIcons.lightbulb,
-                      color: Colors.amber,
-                      size: 24,
+                  const SizedBox(height: 4),
+                  Text(
+                    '${s.goalDaysThisWeek} of $elapsedDays '
+                    '${elapsedDays == 1 ? 'day' : 'days'} reached',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.75),
+                      fontSize: 13.5,
                     ),
-                    SizedBox(width: 12),
-                    Text(
-                      'Insights',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                      ),
+                  ),
+                  Text(
+                    '${Fmt.liters(s.weekTotalMl)} in total',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.6),
+                      fontSize: 12.5,
                     ),
-                  ],
-                ),
-                const SizedBox(height: 20),
-                _buildInsightItem(
-                  FontAwesomeIcons.glassWater,
-                  'Weekly Average',
-                  'You\'re drinking $weeklyAvgGlasses glasses per day on average',
-                  AppTheme.lightCyan,
-                ),
-                const SizedBox(height: 15),
-                _buildInsightItem(
-                  FontAwesomeIcons.fire,
-                  'Consistency',
-                  currentStreak > 0
-                      ? 'Great job maintaining a $currentStreak day streak!'
-                      : 'Start building your streak today!',
-                  Colors.orange,
-                ),
-                const SizedBox(height: 15),
-                _buildInsightItem(
-                  FontAwesomeIcons.trophy,
-                  'Best Performance',
-                  'Your best day this week was ${_getBestDay()}',
-                  Colors.amber,
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 20),
-          GlassContainer(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Row(
-                  children: [
-                    Icon(
-                      Icons.tips_and_updates,
-                      color: Colors.lightBlue,
-                      size: 24,
-                    ),
-                    SizedBox(width: 12),
-                    Text(
-                      'Recommendations',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 20),
-                _buildRecommendation(
-                  '💧 Try drinking a glass right after waking up',
-                ),
-                const SizedBox(height: 12),
-                _buildRecommendation(
-                  '⏰ Set reminders for afternoon hydration',
-                ),
-                const SizedBox(height: 12),
-                _buildRecommendation(
-                  '🎯 Increase target by 1 glass for better results',
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildStatCard({
-    required IconData icon,
-    required String title,
-    required String value,
-    required String subtitle,
-    required Color color,
-  }) {
-    return GlassContainer(
-      padding: const EdgeInsets.all(15),
-      child: Column(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: color.withOpacity(0.2),
-            ),
-            child: FaIcon(icon, color: color, size: 24),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            title,
-            style: TextStyle(
-              color: Colors.white.withOpacity(0.7),
-              fontSize: 12,
-            ),
-            textAlign: TextAlign.center,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          const SizedBox(height: 5),
-          Text(
-            value,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          Text(
-            subtitle,
-            style: TextStyle(
-              color: Colors.white.withOpacity(0.6),
-              fontSize: 12,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildAchievement(
-    IconData icon,
-    String title,
-    String description,
-    bool isUnlocked,
-  ) {
-    return Row(
-      children: [
-        Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: isUnlocked
-                ? Colors.amber.withOpacity(0.2)
-                : Colors.white.withOpacity(0.1),
-          ),
-          child: FaIcon(
-            icon,
-            color: isUnlocked ? Colors.amber : Colors.white38,
-            size: 24,
-          ),
-        ),
-        const SizedBox(width: 15),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: TextStyle(
-                  color: isUnlocked ? Colors.white : Colors.white54,
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              Text(
-                description,
-                style: TextStyle(
-                  color: isUnlocked ? Colors.white70 : Colors.white38,
-                  fontSize: 12,
-                ),
-              ),
-            ],
-          ),
-        ),
-        if (isUnlocked)
-          const Icon(Icons.check_circle, color: Colors.white, size: 24),
-      ],
-    );
-  }
-
-  Widget _buildBarChart() {
-    final maxValue = weeklyData.values.isEmpty
-        ? 2000.0
-        : weeklyData.values.reduce((a, b) => a > b ? a : b).toDouble();
-    final safeMaxValue = maxValue > 0 ? maxValue : 2000.0;
-
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceAround,
-      crossAxisAlignment: CrossAxisAlignment.end,
-      children: weeklyData.entries.map((entry) {
-        final height = (entry.value / safeMaxValue * 180).clamp(20.0, 180.0);
-        final isGoalMet = entry.value >= 2000;
-
-        return Column(
-          mainAxisAlignment: MainAxisAlignment.end,
-          children: [
-            Text(
-              '${(entry.value / 1000).toStringAsFixed(1)}L',
-              style: const TextStyle(
-                color: Colors.white70,
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            const SizedBox(height: 5),
-            Container(
-              width: 32,
-              height: height,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(8),
-                gradient: LinearGradient(
-                  begin: Alignment.bottomCenter,
-                  end: Alignment.topCenter,
-                  colors: isGoalMet
-                      ? [Colors.green.shade700, Colors.green.shade400]
-                      : [AppTheme.oceanBlue, AppTheme.lightCyan],
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: (isGoalMet ? Colors.green : AppTheme.lightCyan)
-                        .withOpacity(0.3),
-                    blurRadius: 8,
-                    spreadRadius: 2,
                   ),
                 ],
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              entry.key,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
               ),
             ),
           ],
-        );
-      }).toList(),
+        ),
+      ),
+      const SizedBox(height: 28),
+      SectionTitle(
+        'Achievements',
+        trailing: Text(
+          '${unlocked.length} / ${AchievementCatalog.all.length}',
+          style: const TextStyle(
+            color: AppTheme.lightCyan,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      ),
+      GridView.count(
+        crossAxisCount: 2,
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        mainAxisSpacing: 12,
+        crossAxisSpacing: 12,
+        childAspectRatio: 1.35,
+        children: [
+          for (final def in AchievementCatalog.all)
+            _Badge(def: def, unlocked: unlocked.contains(def.id)),
+        ],
+      ),
+    ];
+    if (Breakpoints.isWide(context)) {
+      return ListView(
+        padding: _wideTabPadding,
+        children: [
+          _twoColumns(items.sublist(0, 3), items.sublist(4), leftFlex: 1),
+        ],
+      );
+    }
+    return ListView(padding: _tabPadding, children: items);
+  }
+}
+
+class _Badge extends StatelessWidget {
+  final AchievementDef def;
+  final bool unlocked;
+
+  const _Badge({required this.def, required this.unlocked});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = unlocked ? Colors.amber : Colors.white38;
+    return Semantics(
+      label:
+          '${def.title}, ${unlocked ? 'unlocked' : 'locked'}. ${def.description}',
+      excludeSemantics: true,
+      child: GlassContainer(
+        padding: const EdgeInsets.all(14),
+        borderRadius: BorderRadius.circular(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: color.withValues(alpha: unlocked ? 0.22 : 0.12),
+                  ),
+                  child: Icon(def.icon, color: color, size: 20),
+                ),
+                const Spacer(),
+                Icon(
+                  unlocked
+                      ? Icons.check_circle_rounded
+                      : Icons.lock_outline_rounded,
+                  size: 18,
+                  color: unlocked ? AppTheme.success : Colors.white30,
+                ),
+              ],
+            ),
+            const Spacer(),
+            Text(
+              def.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: unlocked ? Colors.white : Colors.white54,
+                fontWeight: FontWeight.w700,
+                fontSize: 14,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              def.description,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: unlocked ? 0.7 : 0.4),
+                fontSize: 11,
+                height: 1.3,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
+}
 
-  Widget _buildInsightItem(
-    IconData icon,
-    String title,
-    String description,
-    Color color,
-  ) {
-    return Row(
-      children: [
-        Container(
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: color.withOpacity(0.2),
-          ),
-          child: FaIcon(icon, color: color, size: 20),
+class _WeekTab extends StatelessWidget {
+  final AnalyticsSummary summary;
+
+  const _WeekTab({required this.summary});
+
+  @override
+  Widget build(BuildContext context) {
+    final s = summary;
+    final best = s.bestDayThisWeek;
+
+    final items = <Widget>[
+      GlassContainer(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    "This week's progress",
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                Text(
+                  'Goal ${Fmt.liters(s.goalMl)}',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.7),
+                    fontSize: 12.5,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 18),
+            if (!s.weekHasData)
+              const _NoData(message: 'No drinks logged this week yet.')
+            else
+              GoalBarChart(days: s.week, goalMl: s.goalMl),
+            if (s.weekHasData) ...[
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  _Legend(color: AppTheme.success, label: 'Goal reached'),
+                  const SizedBox(width: 16),
+                  _Legend(color: AppTheme.lightCyan, label: 'Below goal'),
+                ],
+              ),
+            ],
+          ],
         ),
-        const SizedBox(width: 15),
-        Expanded(
+      ),
+      if (s.weekHasData) ...[
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Expanded(
+              child: StatTile(
+                icon: Icons.water_drop_rounded,
+                label: 'Week total',
+                value: Fmt.liters(s.weekTotalMl).replaceAll(' L', ''),
+                unit: 'litres',
+                color: AppTheme.lightCyan,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: StatTile(
+                icon: Icons.star_rounded,
+                label: 'Best day',
+                value: best == null ? '-' : Fmt.weekday(best.day),
+                unit: best == null ? null : Fmt.liters(best.ml),
+                color: Colors.amber,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        GlassContainer(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                title,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                description,
+              const Text(
+                'Daily breakdown',
                 style: TextStyle(
-                  color: Colors.white.withOpacity(0.7),
-                  fontSize: 12,
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
                 ),
               ),
+              const SizedBox(height: 16),
+              for (final d in s.week.where((d) => !d.isFuture))
+                _DayRow(day: d, goalMl: s.goalMl),
             ],
           ),
         ),
       ],
+    ];
+    if (Breakpoints.isWide(context)) {
+      return ListView(
+        padding: _wideTabPadding,
+        children: [
+          _twoColumns(
+            [items.first],
+            items.length > 1 ? items.sublist(2) : const [],
+            leftFlex: 3,
+          ),
+        ],
+      );
+    }
+    return ListView(padding: _tabPadding, children: items);
+  }
+}
+
+class _DayRow extends StatelessWidget {
+  final DayTotal day;
+  final int goalMl;
+
+  const _DayRow({required this.day, required this.goalMl});
+
+  @override
+  Widget build(BuildContext context) {
+    final ratio = goalMl > 0
+        ? (day.ml / goalMl).clamp(0.0, 1.0).toDouble()
+        : 0.0;
+    final reached = goalMl > 0 && day.ml >= goalMl;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text(
+                day.isToday ? 'Today' : Fmt.weekday(day.day),
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: day.isToday ? FontWeight.w700 : FontWeight.w500,
+                  fontSize: 14,
+                ),
+              ),
+              if (reached) ...[
+                const SizedBox(width: 6),
+                const Icon(
+                  Icons.check_circle_rounded,
+                  size: 15,
+                  color: AppTheme.success,
+                ),
+              ],
+              const Spacer(),
+              Text(
+                Fmt.liters(day.ml, decimals: 2),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13.5,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: LinearProgressIndicator(
+              value: ratio,
+              minHeight: 8,
+              backgroundColor: Colors.white.withValues(alpha: 0.15),
+              valueColor: AlwaysStoppedAnimation(
+                reached ? AppTheme.success : AppTheme.lightCyan,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
+}
 
-  Widget _buildRecommendation(String text) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          margin: const EdgeInsets.only(top: 2),
-          padding: const EdgeInsets.all(6),
-          decoration: BoxDecoration(
-            color: Colors.amber.withOpacity(0.2),
-            shape: BoxShape.circle,
-          ),
-          child: const Icon(
-            Icons.lightbulb,
-            color: Colors.amber,
-            size: 16,
+class _TrendsTab extends StatelessWidget {
+  final AnalyticsSummary summary;
+
+  const _TrendsTab({required this.summary});
+
+  @override
+  Widget build(BuildContext context) {
+    final s = summary;
+    final observations = TrendInsights.observations(s);
+    final suggestions = TrendInsights.suggestions(s);
+    final totalBeverage = s.byBeverage.values.fold<int>(0, (a, b) => a + b);
+    final beverages = s.byBeverage.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+
+    final habits = <Widget>[
+      if (observations.isNotEmpty) ...[
+        const SizedBox(height: 24),
+        const SectionTitle('Your habits'),
+        for (final tip in observations) ...[
+          InsightCard.fromTip(tip),
+          const SizedBox(height: 12),
+        ],
+      ],
+    ];
+    final drinks = <Widget>[
+      if (beverages.isNotEmpty) ...[
+        const SizedBox(height: 12),
+        const SectionTitle('What you drink'),
+        GlassContainer(
+          child: Column(
+            children: [
+              for (final entry in beverages)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 14),
+                  child: Row(
+                    children: [
+                      Icon(
+                        beverageIcon(entry.key),
+                        color: AppTheme.lightCyan,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 12),
+                      SizedBox(
+                        width: 64,
+                        child: Text(
+                          BeverageModel.labelFor(entry.key),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13.5,
+                          ),
+                        ),
+                      ),
+                      Expanded(
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: LinearProgressIndicator(
+                            value: totalBeverage == 0
+                                ? 0
+                                : entry.value / totalBeverage,
+                            minHeight: 8,
+                            backgroundColor: Colors.white.withValues(
+                              alpha: 0.15,
+                            ),
+                            valueColor: const AlwaysStoppedAnimation(
+                              AppTheme.lightCyan,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      SizedBox(
+                        width: 40,
+                        child: Text(
+                          totalBeverage == 0
+                              ? '0%'
+                              : '${(entry.value / totalBeverage * 100).round()}%',
+                          textAlign: TextAlign.right,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
           ),
         ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Text(
-            text,
-            style: TextStyle(
-              color: Colors.white.withOpacity(0.9),
-              fontSize: 14,
-              height: 1.4,
+      ],
+    ];
+    final suggest = <Widget>[
+      const SizedBox(height: 24),
+      const SectionTitle('Suggestions'),
+      for (final tip in suggestions) ...[
+        InsightCard.fromTip(tip),
+        const SizedBox(height: 12),
+      ],
+    ];
+    final items = <Widget>[
+      GlassContainer(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Last 30 days',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 17,
+                fontWeight: FontWeight.w700,
+              ),
             ),
+            const SizedBox(height: 4),
+            Text(
+              'Green bars reached your ${Fmt.liters(s.goalMl)} goal.',
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.65),
+                fontSize: 12.5,
+              ),
+            ),
+            const SizedBox(height: 18),
+            if (s.daysTracked30 == 0)
+              const _NoData(message: 'Nothing logged in the last 30 days.')
+            else
+              GoalBarChart(
+                days: s.last30,
+                goalMl: s.goalMl,
+                compact: true,
+                height: 130,
+              ),
+          ],
+        ),
+      ),
+      ...habits,
+      ...drinks,
+      ...suggest,
+    ];
+    if (Breakpoints.isWide(context)) {
+      return ListView(
+        padding: _wideTabPadding,
+        children: [
+          items.first,
+          const SizedBox(height: 8),
+          _twoColumns([...habits, ...suggest], [...drinks]),
+        ],
+      );
+    }
+    return ListView(padding: _tabPadding, children: items);
+  }
+}
+
+class _Legend extends StatelessWidget {
+  final Color color;
+  final String label;
+
+  const _Legend({required this.color, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Container(
+          width: 10,
+          height: 10,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 6),
+        Text(
+          label,
+          style: TextStyle(
+            color: Colors.white.withValues(alpha: 0.7),
+            fontSize: 12,
           ),
         ),
       ],
     );
   }
+}
 
-  String _getBestDay() {
-    if (weeklyData.isEmpty || weeklyData.values.every((v) => v == 0)) {
-      return 'N/A';
-    }
+class _NoData extends StatelessWidget {
+  final String message;
 
-    var bestEntry = weeklyData.entries.first;
-    for (var entry in weeklyData.entries) {
-      if (entry.value > bestEntry.value) {
-        bestEntry = entry;
-      }
-    }
-    return bestEntry.key;
+  const _NoData({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 28),
+      child: Center(
+        child: Column(
+          children: [
+            Icon(
+              Icons.water_drop_outlined,
+              size: 44,
+              color: Colors.white.withValues(alpha: 0.4),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white.withValues(alpha: 0.7)),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

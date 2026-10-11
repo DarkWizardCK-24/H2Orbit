@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:h2orbit/utils/constants.dart';
 
 class UserModel {
   final String uid;
@@ -11,8 +12,8 @@ class UserModel {
   final int heightCm;
   final int weightKg;
   final int dailyGlassTarget;
-  
-  UserModel({
+
+  const UserModel({
     required this.uid,
     required this.name,
     required this.email,
@@ -24,23 +25,59 @@ class UserModel {
     required this.weightKg,
     required this.dailyGlassTarget,
   });
-  
+
+  /// "Aarav Mehta" -> "Aarav". Falls back to a friendly word for empty names.
+  String get firstName {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return 'there';
+    return trimmed.split(RegExp(r'\s+')).first;
+  }
+
+  int get dailyGoalMl => dailyGlassTarget * AppConstants.mlPerGlass;
+
+  UserModel copyWith({
+    String? name,
+    String? phone,
+    DateTime? dateOfBirth,
+    String? gender,
+    int? heightCm,
+    int? weightKg,
+    int? dailyGlassTarget,
+  }) {
+    final dob = dateOfBirth ?? this.dateOfBirth;
+    return UserModel(
+      uid: uid,
+      name: name ?? this.name,
+      email: email,
+      phone: phone ?? this.phone,
+      dateOfBirth: dob,
+      age: dateOfBirth == null ? age : calculateAge(dob),
+      gender: gender ?? this.gender,
+      heightCm: heightCm ?? this.heightCm,
+      weightKg: weightKg ?? this.weightKg,
+      dailyGlassTarget: dailyGlassTarget ?? this.dailyGlassTarget,
+    );
+  }
+
   factory UserModel.fromFirestore(DocumentSnapshot doc) {
-    Map data = doc.data() as Map;
+    final data = (doc.data() as Map<String, dynamic>?) ?? const {};
+    final dob =
+        (data['dateOfBirth'] as Timestamp?)?.toDate() ?? DateTime(2000, 1, 1);
     return UserModel(
       uid: doc.id,
       name: data['name'] ?? '',
       email: data['email'] ?? '',
       phone: data['phone'] ?? '',
-      dateOfBirth: (data['dateOfBirth'] as Timestamp).toDate(),
-      age: data['age'] ?? 0,
+      dateOfBirth: dob,
+      age: data['age'] ?? calculateAge(dob),
       gender: data['gender'] ?? '',
       heightCm: data['heightCm'] ?? 170,
       weightKg: data['weightKg'] ?? 70,
-      dailyGlassTarget: data['dailyGlassTarget'] ?? 8,
+      dailyGlassTarget:
+          data['dailyGlassTarget'] ?? AppConstants.defaultWaterTarget,
     );
   }
-  
+
   Map<String, dynamic> toMap() {
     return {
       'name': name,
@@ -55,11 +92,11 @@ class UserModel {
       'updatedAt': FieldValue.serverTimestamp(),
     };
   }
-  
-  static int calculateAge(DateTime birthDate) {
-    DateTime today = DateTime.now();
+
+  static int calculateAge(DateTime birthDate, {DateTime? now}) {
+    final today = now ?? DateTime.now();
     int age = today.year - birthDate.year;
-    if (today.month < birthDate.month || 
+    if (today.month < birthDate.month ||
         (today.month == birthDate.month && today.day < birthDate.day)) {
       age--;
     }

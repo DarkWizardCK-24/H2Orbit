@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:h2orbit/utils/theme.dart';
 
+/// Vertical wheel for picking a whole number (height, weight, glasses...).
 class ScrollPicker extends StatefulWidget {
   final int initialValue;
   final int minValue;
@@ -20,15 +21,15 @@ class ScrollPicker extends StatefulWidget {
 }
 
 class _ScrollPickerState extends State<ScrollPicker> {
-  late FixedExtentScrollController _scrollController;
+  late final FixedExtentScrollController _scrollController;
   late int _currentValue;
 
   @override
   void initState() {
     super.initState();
-    _currentValue = widget.initialValue;
+    _currentValue = widget.initialValue.clamp(widget.minValue, widget.maxValue);
     _scrollController = FixedExtentScrollController(
-      initialItem: widget.initialValue - widget.minValue,
+      initialItem: _currentValue - widget.minValue,
     );
   }
 
@@ -43,35 +44,31 @@ class _ScrollPickerState extends State<ScrollPicker> {
     return Container(
       height: 120,
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(15),
-        color: Colors.white.withOpacity(0.05),
-        border: Border.all(
-          color: Colors.white.withOpacity(0.1),
-          width: 1,
-        ),
+        borderRadius: BorderRadius.circular(16),
+        color: Colors.white.withValues(alpha: 0.05),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
       ),
       child: Stack(
         children: [
-          // Selected item highlight
           Center(
             child: Container(
               height: 50,
+              margin: const EdgeInsets.symmetric(horizontal: 8),
               decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(10),
+                borderRadius: BorderRadius.circular(12),
                 gradient: LinearGradient(
                   colors: [
-                    AppTheme.lightCyan.withOpacity(0.3),
-                    AppTheme.oceanBlue.withOpacity(0.3),
+                    AppTheme.lightCyan.withValues(alpha: 0.28),
+                    AppTheme.oceanBlue.withValues(alpha: 0.28),
                   ],
                 ),
                 border: Border.all(
-                  color: AppTheme.lightCyan.withOpacity(0.5),
-                  width: 2,
+                  color: AppTheme.lightCyan.withValues(alpha: 0.5),
+                  width: 1.5,
                 ),
               ),
             ),
           ),
-          // Scrollable numbers
           ListWheelScrollView.useDelegate(
             controller: _scrollController,
             itemExtent: 50,
@@ -87,18 +84,17 @@ class _ScrollPickerState extends State<ScrollPicker> {
               childCount: widget.maxValue - widget.minValue + 1,
               builder: (context, index) {
                 final value = widget.minValue + index;
-                final isSelected = value == _currentValue;
-                
+                final selected = value == _currentValue;
                 return Center(
                   child: AnimatedDefaultTextStyle(
                     duration: const Duration(milliseconds: 200),
                     style: TextStyle(
-                      color: isSelected
+                      fontFamily: AppTheme.fontFamily,
+                      color: selected
                           ? Colors.white
-                          : Colors.white.withOpacity(0.4),
-                      fontSize: isSelected ? 28 : 20,
-                      fontWeight:
-                          isSelected ? FontWeight.bold : FontWeight.normal,
+                          : Colors.white.withValues(alpha: 0.4),
+                      fontSize: selected ? 26 : 19,
+                      fontWeight: selected ? FontWeight.w700 : FontWeight.w400,
                     ),
                     child: Text('$value'),
                   ),

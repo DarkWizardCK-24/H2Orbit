@@ -1,340 +1,390 @@
-import 'dart:ui';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:timezone/timezone.dart' as tz;
-import 'package:timezone/data/latest.dart' as tz;
+import 'dart:ui' show Color;
 
-class NotificationService {
+import 'package:flutter/foundation.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter_timezone/flutter_timezone.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:timezone/data/latest.dart' as tz_data;
+import 'package:timezone/timezone.dart' as tz;
+
+/// The user's notification choices, saved on the device.
+class NotificationPrefs {
+  /// Master switch (the user asked for notifications *and* allowed them).
+  final bool enabled;
+  final bool remindersEnabled;
+  final int intervalHours;
+  final int startMinutes; // minutes after midnight
+  final int endMinutes;
+  final bool goalNotifications;
+  final bool achievementNotifications;
+
+  const NotificationPrefs({
+    this.enabled = false,
+    this.remindersEnabled = false,
+    this.intervalHours = 2,
+    this.startMinutes = 8 * 60,
+    this.endMinutes = 22 * 60,
+    this.goalNotifications = true,
+    this.achievementNotifications = true,
+  });
+
+  NotificationPrefs copyWith({
+    bool? enabled,
+    bool? remindersEnabled,
+    int? intervalHours,
+    int? startMinutes,
+    int? endMinutes,
+    bool? goalNotifications,
+    bool? achievementNotifications,
+  }) => NotificationPrefs(
+    enabled: enabled ?? this.enabled,
+    remindersEnabled: remindersEnabled ?? this.remindersEnabled,
+    intervalHours: intervalHours ?? this.intervalHours,
+    startMinutes: startMinutes ?? this.startMinutes,
+    endMinutes: endMinutes ?? this.endMinutes,
+    goalNotifications: goalNotifications ?? this.goalNotifications,
+    achievementNotifications:
+        achievementNotifications ?? this.achievementNotifications,
+  );
+
+  // Key names are unchanged from earlier versions so settings carry over.
+  static const _enabled = 'notifications_enabled';
+  static const _reminders = 'periodic_reminders';
+  static const _interval = 'reminder_interval';
+  static const _startHour = 'start_hour';
+  static const _startMinute = 'start_minute';
+  static const _endHour = 'end_hour';
+  static const _endMinute = 'end_minute';
+  static const _goal = 'goal_achieved_notif';
+  static const _achievement = 'achievement_notif';
+
+  static Future<NotificationPrefs> load() async {
+    final p = await SharedPreferences.getInstance();
+    const d = NotificationPrefs();
+    return NotificationPrefs(
+      enabled: p.getBool(_enabled) ?? d.enabled,
+      remindersEnabled: p.getBool(_reminders) ?? d.remindersEnabled,
+      intervalHours: p.getInt(_interval) ?? d.intervalHours,
+      startMinutes:
+          (p.getInt(_startHour) ?? 8) * 60 + (p.getInt(_startMinute) ?? 0),
+      endMinutes: (p.getInt(_endHour) ?? 22) * 60 + (p.getInt(_endMinute) ?? 0),
+      goalNotifications: p.getBool(_goal) ?? d.goalNotifications,
+      achievementNotifications:
+          p.getBool(_achievement) ?? d.achievementNotifications,
+    );
+  }
+
+  Future<void> save() async {
+    final p = await SharedPreferences.getInstance();
+    await p.setBool(_enabled, enabled);
+    await p.setBool(_reminders, remindersEnabled);
+    await p.setInt(_interval, intervalHours);
+    await p.setInt(_startHour, startMinutes ~/ 60);
+    await p.setInt(_startMinute, startMinutes % 60);
+    await p.setInt(_endHour, endMinutes ~/ 60);
+    await p.setInt(_endMinute, endMinutes % 60);
+    await p.setBool(_goal, goalNotifications);
+    await p.setBool(_achievement, achievementNotifications);
+  }
+}
+
+/// Works out at which times of day reminders should fire.
+class ReminderPlanner {
+  ReminderPlanner._();
+
+  static const int maxPerDay = 24;
+
+  /// Minutes after midnight from [startMinutes] to [endMinutes] (inclusive),
+  /// every [intervalHours]. Empty if the window is empty or backwards.
+  static List<int> slots({
+    required int startMinutes,
+    required int endMinutes,
+    required int intervalHours,
+  }) {
+    if (intervalHours < 1 || endMinutes < startMinutes) return const [];
+    final result = <int>[];
+    for (
+      var m = startMinutes;
+      m <= endMinutes && result.length < maxPerDay;
+      m += intervalHours * 60
+    ) {
+      result.add(m);
+    }
+    return result;
+  }
+}
+
+/// What the rest of the app can ask the notification layer to do.
+abstract class NotificationGateway {
+  Future<void> goalReached();
+
+  /// A one-off "you unlocked something" notification.
+  Future<void> achievement({
+    required String title,
+    required String body,
+    required String payload,
+  });
+}
+
+/// What the notification settings screen needs.
+abstract class NotificationScheduler {
+  /// `false` on platforms without local notifications (web, desktop).
+  bool get isSupported;
+
+  Future<bool> requestPermissions();
+
+  Future<bool> areNotificationsAllowed();
+
+  /// Replaces the repeating reminders with the schedule in [prefs].
+  Future<void> applyReminderSchedule(NotificationPrefs prefs);
+
+  Future<void> cancelAll();
+
+  Future<void> sendTest();
+}
+
+class NotificationService
+    implements NotificationGateway, NotificationScheduler {
   static final NotificationService _instance = NotificationService._internal();
   factory NotificationService() => _instance;
   NotificationService._internal();
 
-  final FlutterLocalNotificationsPlugin _notifications =
-      FlutterLocalNotificationsPlugin();
+  /// Notification ids 100-199 are reserved for the repeating reminders.
+  static const int _reminderIdBase = 100;
+  static const String _channelId = 'h2orbit_channel';
 
+  final FlutterLocalNotificationsPlugin _plugin =
+      FlutterLocalNotificationsPlugin();
   bool _initialized = false;
 
+  /// Local notifications are only implemented for phones.
+  @override
+  bool get isSupported =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS);
+
+  /// Never throws: the app must still start where notifications don't work.
   Future<void> initialize() async {
-    if (_initialized) return;
-
-    tz.initializeTimeZones();
-
-    const androidSettings = AndroidInitializationSettings(
-      '@mipmap/ic_launcher',
-    );
-    const iosSettings = DarwinInitializationSettings(
-      requestAlertPermission: true,
-      requestBadgePermission: true,
-      requestSoundPermission: true,
-    );
-
-    const settings = InitializationSettings(
-      android: androidSettings,
-      iOS: iosSettings,
-    );
-
-    await _notifications.initialize(
-      settings,
-      onDidReceiveNotificationResponse: _onNotificationTap,
-    );
-
-    _initialized = true;
-  }
-
-  void _onNotificationTap(NotificationResponse response) {}
-
-  Future<bool> requestPermissions() async {
-    final android = _notifications
-        .resolvePlatformSpecificImplementation<
-          AndroidFlutterLocalNotificationsPlugin
-        >();
-    final ios = _notifications
-        .resolvePlatformSpecificImplementation<
-          IOSFlutterLocalNotificationsPlugin
-        >();
-
-    if (android != null) {
-      final granted = await android.requestNotificationsPermission();
-      return granted ?? false;
-    }
-
-    if (ios != null) {
-      final granted = await ios.requestPermissions(
-        alert: true,
-        badge: true,
-        sound: true,
-      );
-      return granted ?? false;
-    }
-
-    return true;
-  }
-
-  Future<void> showNotification({
-    required int id,
-    required String title,
-    required String body,
-    String? payload,
-  }) async {
-    const androidDetails = AndroidNotificationDetails(
-      'h2orbit_channel',
-      'H2Orbit Notifications',
-      channelDescription: 'Hydration reminders and achievements',
-      importance: Importance.high,
-      priority: Priority.high,
-      icon: '@mipmap/ic_launcher',
-      color: Color(0xFF3E92CC),
-      playSound: true,
-      enableVibration: true,
-      enableLights: true,
-    );
-
-    const iosDetails = DarwinNotificationDetails(
-      presentAlert: true,
-      presentBadge: true,
-      presentSound: true,
-    );
-
-    const details = NotificationDetails(
-      android: androidDetails,
-      iOS: iosDetails,
-    );
-
-    await _notifications.show(id, title, body, details, payload: payload);
-  }
-
-  Future<void> scheduleNotification({
-    required int id,
-    required String title,
-    required String body,
-    required DateTime scheduledTime,
-    String? payload,
-  }) async {
-    const androidDetails = AndroidNotificationDetails(
-      'h2orbit_channel',
-      'H2Orbit Notifications',
-      channelDescription: 'Hydration reminders and achievements',
-      importance: Importance.high,
-      priority: Priority.high,
-      icon: '@mipmap/ic_launcher',
-      color: Color(0xFF3E92CC),
-      playSound: true,
-      enableVibration: true,
-    );
-
-    const iosDetails = DarwinNotificationDetails(
-      presentAlert: true,
-      presentBadge: true,
-      presentSound: true,
-    );
-
-    const details = NotificationDetails(
-      android: androidDetails,
-      iOS: iosDetails,
-    );
-
-    await _notifications.zonedSchedule(
-      id,
-      title,
-      body,
-      tz.TZDateTime.from(scheduledTime, tz.local),
-      details,
-      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
-      payload: payload,
-    );
-  }
-
-  Future<void> schedulePeriodicReminders({
-    required int intervalHours,
-    required int startHour,
-    required int endHour,
-  }) async {
-    await cancelAllNotifications();
-
-    final now = DateTime.now();
-    int notificationId = 0;
-
-    for (int day = 0; day < 2; day++) {
-      for (int hour = startHour; hour < endHour; hour += intervalHours) {
-        final scheduledTime = DateTime(
-          now.year,
-          now.month,
-          now.day + day,
-          hour,
-          0,
-        );
-
-        if (scheduledTime.isAfter(now)) {
-          await scheduleNotification(
-            id: notificationId++,
-            title: 'Time to Hydrate!',
-            body: 'Don\'t forget to drink water. Your body needs it!',
-            scheduledTime: scheduledTime,
-          );
-        }
+    if (_initialized || !isSupported) return;
+    try {
+      tz_data.initializeTimeZones();
+      try {
+        final zone = await FlutterTimezone.getLocalTimezone();
+        tz.setLocalLocation(tz.getLocation(zone.identifier));
+      } catch (e) {
+        debugPrint('Could not read the device time zone, using UTC: $e');
       }
+
+      await _plugin.initialize(
+        settings: const InitializationSettings(
+          android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+          // Permission is asked for from the settings screen, not at launch.
+          iOS: DarwinInitializationSettings(
+            requestAlertPermission: false,
+            requestBadgePermission: false,
+            requestSoundPermission: false,
+          ),
+        ),
+      );
+      _initialized = true;
+    } catch (e) {
+      debugPrint('Notifications unavailable: $e');
     }
   }
 
-  Future<void> showAchievementNotification({
+  @override
+  Future<bool> requestPermissions() async {
+    if (!isSupported) return false;
+    await initialize();
+    try {
+      final android = _plugin
+          .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin
+          >();
+      if (android != null) {
+        return await android.requestNotificationsPermission() ?? false;
+      }
+      final ios = _plugin
+          .resolvePlatformSpecificImplementation<
+            IOSFlutterLocalNotificationsPlugin
+          >();
+      if (ios != null) {
+        return await ios.requestPermissions(
+              alert: true,
+              badge: true,
+              sound: true,
+            ) ??
+            false;
+      }
+    } catch (e) {
+      debugPrint('Could not request notification permission: $e');
+    }
+    return false;
+  }
+
+  @override
+  Future<bool> areNotificationsAllowed() async {
+    if (!isSupported) return false;
+    await initialize();
+    try {
+      final android = _plugin
+          .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin
+          >();
+      if (android != null) {
+        return await android.areNotificationsEnabled() ?? false;
+      }
+      final ios = _plugin
+          .resolvePlatformSpecificImplementation<
+            IOSFlutterLocalNotificationsPlugin
+          >();
+      if (ios != null) {
+        return (await ios.checkPermissions())?.isEnabled ?? false;
+      }
+    } catch (e) {
+      debugPrint('Could not check notification permission: $e');
+    }
+    return false;
+  }
+
+  NotificationDetails get _details => const NotificationDetails(
+    android: AndroidNotificationDetails(
+      _channelId,
+      'H2Orbit Notifications',
+      channelDescription: 'Hydration reminders and achievements',
+      importance: Importance.high,
+      priority: Priority.high,
+      icon: '@mipmap/ic_launcher',
+      color: Color(0xFF3E92CC),
+    ),
+    iOS: DarwinNotificationDetails(
+      presentAlert: true,
+      presentBadge: true,
+      presentSound: true,
+    ),
+  );
+
+  Future<void> showNow({
+    required int id,
     required String title,
     required String body,
     String? payload,
   }) async {
-    await showNotification(
-      id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+    if (!isSupported) return;
+    await initialize();
+    try {
+      await _plugin.show(
+        id: id,
+        title: title,
+        body: body,
+        notificationDetails: _details,
+        payload: payload,
+      );
+    } catch (e) {
+      debugPrint('Could not show notification: $e');
+    }
+  }
+
+  /// Replaces the repeating reminders with the schedule in [prefs].
+  ///
+  /// Each reminder repeats every day at its time, so the user keeps getting
+  /// them without having to reopen the app.
+  @override
+  Future<void> applyReminderSchedule(NotificationPrefs prefs) async {
+    if (!isSupported) return;
+    await initialize();
+    try {
+      for (var i = 0; i < ReminderPlanner.maxPerDay; i++) {
+        await _plugin.cancel(id: _reminderIdBase + i);
+      }
+      if (!prefs.enabled || !prefs.remindersEnabled) return;
+
+      final slots = ReminderPlanner.slots(
+        startMinutes: prefs.startMinutes,
+        endMinutes: prefs.endMinutes,
+        intervalHours: prefs.intervalHours,
+      );
+      for (var i = 0; i < slots.length; i++) {
+        await _plugin.zonedSchedule(
+          id: _reminderIdBase + i,
+          title: 'Time to hydrate',
+          body: "A glass of water now keeps you on track for today's goal.",
+          scheduledDate: _nextOccurrence(slots[i]),
+          notificationDetails: _details,
+          // Inexact alarms need no special permission and are fine for
+          // reminders that may arrive a few minutes late.
+          androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+          matchDateTimeComponents: DateTimeComponents.time,
+          payload: 'reminder',
+        );
+      }
+    } catch (e) {
+      debugPrint('Could not schedule reminders: $e');
+    }
+  }
+
+  tz.TZDateTime _nextOccurrence(int minutesOfDay) {
+    final now = tz.TZDateTime.now(tz.local);
+    var when = tz.TZDateTime(
+      tz.local,
+      now.year,
+      now.month,
+      now.day,
+      minutesOfDay ~/ 60,
+      minutesOfDay % 60,
+    );
+    if (!when.isAfter(now)) when = when.add(const Duration(days: 1));
+    return when;
+  }
+
+  @override
+  Future<void> cancelAll() async {
+    if (!isSupported) return;
+    try {
+      await _plugin.cancelAll();
+    } catch (e) {
+      debugPrint('Could not cancel notifications: $e');
+    }
+  }
+
+  @override
+  Future<void> sendTest() => showNow(
+    id: 99999,
+    title: 'Test notification',
+    body: 'Notifications are working. Stay hydrated!',
+  );
+
+  // ---- NotificationGateway: respects the user's choices ----
+
+  Future<NotificationPrefs> _prefs() => NotificationPrefs.load();
+
+  @override
+  Future<void> goalReached() async {
+    final prefs = await _prefs();
+    if (!prefs.enabled || !prefs.goalNotifications) return;
+    await showNow(
+      id: 9999,
+      title: 'Goal achieved!',
+      body: "Congratulations! You've reached your daily hydration goal.",
+      payload: 'goal',
+    );
+  }
+
+  @override
+  Future<void> achievement({
+    required String title,
+    required String body,
+    required String payload,
+  }) async {
+    final prefs = await _prefs();
+    if (!prefs.enabled || !prefs.achievementNotifications) return;
+    await showNow(
+      // The same achievement always uses the same id, so it can't stack up.
+      id: 1000 + (payload.hashCode & 0xFFFFF),
       title: title,
       body: body,
       payload: payload,
     );
-  }
-
-  Future<void> showGoalAchievedNotification() async {
-    await showNotification(
-      id: 9999,
-      title: 'Goal Achieved!',
-      body: 'Congratulations! You\'ve reached your daily hydration goal!',
-    );
-  }
-
-  Future<void> showStreakAchievement(int days) async {
-    String title = '';
-    String body = '';
-
-    if (days == 3) {
-      title = '🔥 3-Day Streak!';
-      body = 'You\'re on fire! Keep up the great hydration habit!';
-    } else if (days == 7) {
-      title = '🔥 Week Warrior!';
-      body = 'Amazing! 7 days of consistent hydration!';
-    } else if (days == 14) {
-      title = '🔥 Two Week Champion!';
-      body = 'Incredible! Two weeks of dedication!';
-    } else if (days == 30) {
-      title = '🏆 Monthly Master!';
-      body = 'Outstanding! 30 days of perfect hydration!';
-    } else if (days == 60) {
-      title = '💎 Diamond Hydrator!';
-      body = 'Legendary! 60 days of unwavering commitment!';
-    } else if (days == 100) {
-      title = '👑 Hydration King/Queen!';
-      body = 'Elite status! 100 days of excellence!';
-    } else {
-      return;
-    }
-
-    await showAchievementNotification(
-      title: title,
-      body: body,
-      payload: 'streak_$days',
-    );
-  }
-
-  Future<void> showMilestoneAchievement(int totalGlasses) async {
-    String title = '';
-    String body = '';
-
-    if (totalGlasses == 50) {
-      title = '💧 First 50 Glasses!';
-      body = 'You\'ve tracked 50 glasses of water!';
-    } else if (totalGlasses == 100) {
-      title = '💧 Century Club!';
-      body = '100 glasses tracked! You\'re doing amazing!';
-    } else if (totalGlasses == 250) {
-      title = '🌊 Quarter Thousand!';
-      body = '250 glasses! Your body thanks you!';
-    } else if (totalGlasses == 500) {
-      title = '🌊 Half a Thousand!';
-      body = '500 glasses! Absolutely incredible!';
-    } else if (totalGlasses == 1000) {
-      title = '🏆 Legendary Status!';
-      body = '1000 glasses! You\'re a hydration legend!';
-    } else {
-      return;
-    }
-
-    await showAchievementNotification(
-      title: title,
-      body: body,
-      payload: 'milestone_$totalGlasses',
-    );
-  }
-
-  // Custom scheduled notification
-  Future<void> scheduleCustomReminder({
-    required String title,
-    required String body,
-    required DateTime scheduledTime,
-  }) async {
-    await scheduleNotification(
-      id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
-      title: title,
-      body: body,
-      scheduledTime: scheduledTime,
-      payload: 'custom',
-    );
-  }
-
-  // Morning reminder
-  Future<void> scheduleMorningReminder(int hour) async {
-    final now = DateTime.now();
-    final scheduledTime = DateTime(
-      now.year,
-      now.month,
-      now.day + (now.hour >= hour ? 1 : 0),
-      hour,
-      0,
-    );
-
-    await scheduleNotification(
-      id: 1000,
-      title: '🌅 Good Morning!',
-      body: 'Start your day with a glass of water!',
-      scheduledTime: scheduledTime,
-    );
-  }
-
-  // Evening reminder
-  Future<void> scheduleEveningReminder(int hour) async {
-    final now = DateTime.now();
-    final scheduledTime = DateTime(
-      now.year,
-      now.month,
-      now.day + (now.hour >= hour ? 1 : 0),
-      hour,
-      0,
-    );
-
-    await scheduleNotification(
-      id: 1001,
-      title: '🌙 Evening Check-in',
-      body: 'Have you reached your hydration goal today?',
-      scheduledTime: scheduledTime,
-    );
-  }
-
-  Future<void> cancelNotification(int id) async {
-    await _notifications.cancel(id);
-  }
-
-  Future<void> cancelAllNotifications() async {
-    await _notifications.cancelAll();
-  }
-
-  Future<List<PendingNotificationRequest>> getPendingNotifications() async {
-    return await _notifications.pendingNotificationRequests();
-  }
-
-  Future<bool> areNotificationsEnabled() async {
-    final android = _notifications
-        .resolvePlatformSpecificImplementation<
-          AndroidFlutterLocalNotificationsPlugin
-        >();
-
-    if (android != null) {
-      final enabled = await android.areNotificationsEnabled();
-      return enabled ?? false;
-    }
-
-    return true;
   }
 }

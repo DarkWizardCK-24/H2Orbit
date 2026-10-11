@@ -1,177 +1,136 @@
+import 'package:flutter/foundation.dart';
 import 'package:h2orbit/services/notification_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+/// Decides when to celebrate (and remembers what was already celebrated, per
+/// user, so nothing fires twice).
 class AchievementManager {
-  static final AchievementManager _instance = AchievementManager._internal();
-  factory AchievementManager() => _instance;
-  AchievementManager._internal();
+  AchievementManager({
+    required this.userId,
+    required NotificationGateway notifications,
+  }) : _notifications = notifications;
 
-  final NotificationService _notificationService = NotificationService();
-  final Set<String> _unlockedAchievements = {};
+  final String userId;
+  final NotificationGateway _notifications;
+  final Set<String> _celebrated = {};
+  bool _loaded = false;
 
-  Future<void> initialize() async {
+  /// True until something has been saved for this user. On that first run,
+  /// milestones that were already earned are recorded quietly instead of
+  /// sending a burst of old notifications.
+  bool _firstRun = false;
+
+  static const List<int> streakMilestones = [3, 7, 14, 30, 60, 100];
+  static const List<int> glassMilestones = [50, 100, 250, 500, 1000];
+
+  String get _storageKey => 'celebrated_achievements_$userId';
+
+  Future<void> _load() async {
+    if (_loaded) return;
     final prefs = await SharedPreferences.getInstance();
-    final achievements = prefs.getStringList('unlocked_achievements') ?? [];
-    _unlockedAchievements.addAll(achievements);
+    final saved = prefs.getStringList(_storageKey);
+    _firstRun = saved == null;
+    _celebrated.addAll(saved ?? const []);
+    _loaded = true;
   }
 
-  Future<void> _unlockAchievement(String achievementId) async {
-    if (_unlockedAchievements.contains(achievementId)) return;
-
-    _unlockedAchievements.add(achievementId);
+  /// Returns `true` the first time [id] is claimed.
+  Future<bool> _claim(String id) async {
+    await _load();
+    if (!_celebrated.add(id)) return false;
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList(
-      'unlocked_achievements',
-      _unlockedAchievements.toList(),
-    );
+    await prefs.setStringList(_storageKey, _celebrated.toList());
+    return true;
   }
 
-  // Check and notify for streak achievements
-  Future<void> checkStreakAchievement(int currentStreak) async {
-    final milestones = [3, 7, 14, 30, 60, 100];
+  static String _dayKey(DateTime d) => '${d.year}-${d.month}-${d.day}';
 
-    for (final milestone in milestones) {
-      if (currentStreak == milestone) {
-        final achievementId = 'streak_$milestone';
-        if (!_unlockedAchievements.contains(achievementId)) {
-          await _unlockAchievement(achievementId);
-          await _notificationService.showStreakAchievement(milestone);
-        }
+  /// Call whenever the day's total changes.
+  Future<void> onProgress({
+    required int intakeMl,
+    required int goalMl,
+    required int streak,
+    required int allTimeGlasses,
+    required DateTime now,
+  }) async {
+    try {
+      final day = _dayKey(now);
+
+      if (goalMl > 0 && intakeMl >= goalMl && await _claim('goal_$day')) {
+        await _notifications.goalReached();
       }
-    }
-  }
-
-  // Check and notify for total glasses milestone
-  Future<void> checkGlassMilestone(int totalGlasses) async {
-    final milestones = [50, 100, 250, 500, 1000];
-
-    for (final milestone in milestones) {
-      if (totalGlasses >= milestone) {
-        final achievementId = 'glasses_$milestone';
-        if (!_unlockedAchievements.contains(achievementId)) {
-          await _unlockAchievement(achievementId);
-          await _notificationService.showMilestoneAchievement(milestone);
-        }
-      }
-    }
-  }
-
-  // Check daily goal achievement
-  Future<void> checkDailyGoal(int currentIntake, int targetIntake) async {
-    if (currentIntake >= targetIntake) {
-      final today = DateTime.now();
-      final achievementId = 'daily_${today.year}_${today.month}_${today.day}';
-
-      if (!_unlockedAchievements.contains(achievementId)) {
-        await _unlockAchievement(achievementId);
-        await _notificationService.showGoalAchievedNotification();
-      }
-    }
-  }
-
-  // Check perfect week (all 7 days goals met)
-  Future<void> checkPerfectWeek(List<bool> weeklyGoals) async {
-    if (weeklyGoals.length == 7 && weeklyGoals.every((goal) => goal)) {
-      final achievementId =
-          'perfect_week_${DateTime.now().millisecondsSinceEpoch ~/ 604800000}';
-
-      if (!_unlockedAchievements.contains(achievementId)) {
-        await _unlockAchievement(achievementId);
-        await _notificationService.showAchievementNotification(
-          title: '⭐ Perfect Week!',
-          body: 'You achieved your goal every single day this week!',
-          payload: 'perfect_week',
-        );
-      }
-    }
-  }
-
-  // Check early bird (logged water before 8 AM)
-  Future<void> checkEarlyBird() async {
-    final now = DateTime.now();
-    if (now.hour < 8) {
-      final achievementId = 'early_bird_${now.year}_${now.month}_${now.day}';
-
-      if (!_unlockedAchievements.contains(achievementId)) {
-        await _unlockAchievement(achievementId);
-        await _notificationService.showAchievementNotification(
-          title: '🌅 Early Bird!',
-          body: 'Starting your day with hydration! Great job!',
-          payload: 'early_bird',
-        );
-      }
-    }
-  }
-
-  // Check night owl (still hydrating after 10 PM)
-  Future<void> checkNightOwl() async {
-    final now = DateTime.now();
-    if (now.hour >= 22) {
-      final achievementId = 'night_owl_${now.year}_${now.month}_${now.day}';
-
-      if (!_unlockedAchievements.contains(achievementId)) {
-        await _unlockAchievement(achievementId);
-        await _notificationService.showAchievementNotification(
-          title: '🌙 Night Owl!',
-          body: 'Staying hydrated late! Don\'t forget rest too!',
-          payload: 'night_owl',
-        );
-      }
-    }
-  }
-
-  // Check overachiever (exceeded daily goal by 50%)
-  Future<void> checkOverachiever(int currentIntake, int targetIntake) async {
-    if (currentIntake >= targetIntake * 1.5) {
-      final today = DateTime.now();
-      final achievementId =
-          'overachiever_${today.year}_${today.month}_${today.day}';
-
-      if (!_unlockedAchievements.contains(achievementId)) {
-        await _unlockAchievement(achievementId);
-        await _notificationService.showAchievementNotification(
-          title: '🚀 Overachiever!',
-          body: 'You exceeded your daily goal by 50%! Amazing!',
+      if (goalMl > 0 && intakeMl >= goalMl * 1.5 && await _claim('over_$day')) {
+        await _notifications.achievement(
+          title: 'Overachiever!',
+          body: 'You drank 50% more than your daily goal.',
           payload: 'overachiever',
         );
       }
+
+      for (final days in streakMilestones) {
+        if (streak >= days && await _claim('streak_$days') && !_firstRun) {
+          await _notifications.achievement(
+            title: _streakTitle(days),
+            body: '$days days in a row of reaching your goal. Keep going!',
+            payload: 'streak_$days',
+          );
+        }
+      }
+
+      for (final glasses in glassMilestones) {
+        if (allTimeGlasses >= glasses &&
+            await _claim('glasses_$glasses') &&
+            !_firstRun) {
+          await _notifications.achievement(
+            title: '$glasses glasses!',
+            body: "You've logged $glasses glasses of water in total.",
+            payload: 'glasses_$glasses',
+          );
+        }
+      }
+      _firstRun = false;
+    } catch (e) {
+      debugPrint('Achievement check failed: $e');
     }
   }
 
-  // Get all unlocked achievements
-  Set<String> getUnlockedAchievements() {
-    return Set.from(_unlockedAchievements);
+  /// Call right after a drink is logged.
+  Future<void> onDrinkLogged(DateTime now) async {
+    try {
+      final day = _dayKey(now);
+      if (now.hour < 8 && await _claim('early_$day')) {
+        await _notifications.achievement(
+          title: 'Early bird!',
+          body: 'Starting the day with a drink - great habit.',
+          payload: 'early_bird',
+        );
+      }
+      if (now.hour >= 22 && await _claim('night_$day')) {
+        await _notifications.achievement(
+          title: 'Night owl',
+          body: "Still hydrating late - just don't forget to rest too.",
+          payload: 'night_owl',
+        );
+      }
+    } catch (e) {
+      debugPrint('Achievement check failed: $e');
+    }
   }
 
-  // Check if specific achievement is unlocked
-  bool isAchievementUnlocked(String achievementId) {
-    return _unlockedAchievements.contains(achievementId);
-  }
-
-  // Get achievement progress
-  Map<String, dynamic> getAchievementProgress({
-    required int currentStreak,
-    required int totalGlasses,
-  }) {
-    return {
-      'streak_3': currentStreak >= 3,
-      'streak_7': currentStreak >= 7,
-      'streak_14': currentStreak >= 14,
-      'streak_30': currentStreak >= 30,
-      'streak_60': currentStreak >= 60,
-      'streak_100': currentStreak >= 100,
-      'glasses_50': totalGlasses >= 50,
-      'glasses_100': totalGlasses >= 100,
-      'glasses_250': totalGlasses >= 250,
-      'glasses_500': totalGlasses >= 500,
-      'glasses_1000': totalGlasses >= 1000,
-    };
-  }
-
-  // Reset achievements (for testing or user request)
-  Future<void> resetAchievements() async {
-    _unlockedAchievements.clear();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('unlocked_achievements');
+  static String _streakTitle(int days) {
+    switch (days) {
+      case 3:
+        return '3-day streak!';
+      case 7:
+        return 'Week warrior!';
+      case 14:
+        return 'Two-week champion!';
+      case 30:
+        return 'Monthly master!';
+      case 60:
+        return 'Diamond hydrator!';
+      default:
+        return '$days-day streak!';
+    }
   }
 }

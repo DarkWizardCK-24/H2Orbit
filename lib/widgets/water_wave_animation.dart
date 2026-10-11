@@ -1,78 +1,131 @@
-import 'package:flutter/material.dart';
 import 'dart:math' as math;
+
+import 'package:flutter/material.dart';
 import 'package:h2orbit/utils/theme.dart';
+import 'package:h2orbit/widgets/progress_ring.dart';
 
-class WaterWaveAnimation extends StatelessWidget {
+/// A glass of water that fills up as the day's goal is reached, wrapped in a
+/// progress ring. Waves keep moving unless the user turned animations off.
+class WaterOrb extends StatefulWidget {
+  /// 0.0 - 1.0
   final double progress;
-  final AnimationController controller;
+  final double size;
+  final String caption;
 
-  const WaterWaveAnimation({
+  const WaterOrb({
     super.key,
     required this.progress,
-    required this.controller,
+    this.size = 200,
+    this.caption = 'of daily goal',
   });
 
   @override
+  State<WaterOrb> createState() => _WaterOrbState();
+}
+
+class _WaterOrbState extends State<WaterOrb>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _waves = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 4),
+  );
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final reduceMotion = MediaQuery.of(context).disableAnimations;
+    if (reduceMotion) {
+      _waves.stop();
+    } else if (!_waves.isAnimating) {
+      _waves.repeat();
+    }
+  }
+
+  @override
+  void dispose() {
+    _waves.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return Container(
-      height: 140,
-      width: double.infinity,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(16),
-        color: AppTheme.deepCyan.withOpacity(0.25),
-        border: Border.all(
-          color: Colors.white.withOpacity(0.1),
-          width: 1,
-        ),
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(16),
+    final progress = widget.progress.clamp(0.0, 1.0);
+    final ringInset = widget.size * 0.085;
+
+    return Semantics(
+      label: 'Daily progress',
+      value: '${(progress * 100).round()} percent',
+      child: SizedBox(
+        width: widget.size,
+        height: widget.size,
         child: Stack(
+          alignment: Alignment.center,
           children: [
-            // Wave animation
-            AnimatedBuilder(
-              animation: controller,
-              builder: (context, child) {
-                return CustomPaint(
-                  painter: WavePainter(
-                    progress: progress.clamp(0.0, 1.0),
-                    animationValue: controller.value,
-                  ),
-                  size: Size.infinite,
-                );
-              },
+            Positioned.fill(
+              child: ProgressRing(
+                progress: progress,
+                strokeWidth: widget.size * 0.05,
+                showLabel: false,
+              ),
             ),
-            
-            // Percentage text with shadow
-            Center(
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 20,
-                  vertical: 8,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.15),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                    color: Colors.white.withOpacity(0.2),
-                    width: 1,
-                  ),
-                ),
-                child: Text(
-                  '${(progress.clamp(0.0, 1.0) * 100).toInt()}%',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 36,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 1.0,
-                    shadows: [
-                      Shadow(
-                        color: Colors.black38,
-                        offset: Offset(2, 2),
-                        blurRadius: 6,
+            Padding(
+              padding: EdgeInsets.all(ringInset + widget.size * 0.05),
+              child: ClipOval(
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    ColoredBox(
+                      color: AppTheme.deepCyan.withValues(alpha: 0.45),
+                    ),
+                    TweenAnimationBuilder<double>(
+                      tween: Tween(end: progress),
+                      duration: const Duration(milliseconds: 900),
+                      curve: Curves.easeOutCubic,
+                      builder: (context, level, _) => AnimatedBuilder(
+                        animation: _waves,
+                        builder: (context, _) => CustomPaint(
+                          painter: WavePainter(
+                            progress: level,
+                            animationValue: _waves.value,
+                          ),
+                        ),
                       ),
-                    ],
-                  ),
+                    ),
+                    Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            '${(progress * 100).round()}%',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: widget.size * 0.22,
+                              fontWeight: FontWeight.w700,
+                              height: 1.1,
+                              shadows: const [
+                                Shadow(
+                                  color: Colors.black38,
+                                  offset: Offset(0, 2),
+                                  blurRadius: 8,
+                                ),
+                              ],
+                            ),
+                          ),
+                          Text(
+                            widget.caption,
+                            style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.85),
+                              fontSize: widget.size * 0.065,
+                              fontWeight: FontWeight.w500,
+                              shadows: const [
+                                Shadow(color: Colors.black38, blurRadius: 6),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -87,108 +140,62 @@ class WavePainter extends CustomPainter {
   final double progress;
   final double animationValue;
 
-  WavePainter({
-    required this.progress,
-    required this.animationValue,
-  });
+  WavePainter({required this.progress, required this.animationValue});
 
   @override
   void paint(Canvas canvas, Size size) {
     if (progress <= 0) return;
+
+    final level = progress.clamp(0.0, 1.0);
+    final waveHeight = 6.0 * (1 - (level - 0.5).abs()).clamp(0.3, 1.0);
+    final waveLength = size.width / 1.3;
+    final waterLevel = size.height * (1 - level);
 
     final paint = Paint()
       ..shader = LinearGradient(
         begin: Alignment.topCenter,
         end: Alignment.bottomCenter,
         colors: [
-          AppTheme.lightCyan.withOpacity(0.6),
-          AppTheme.oceanBlue.withOpacity(0.8),
-          AppTheme.deepCyan.withOpacity(0.9),
+          AppTheme.lightCyan.withValues(alpha: 0.75),
+          AppTheme.oceanBlue.withValues(alpha: 0.9),
+          AppTheme.waveBlue.withValues(alpha: 0.95),
         ],
-        stops: const [0.0, 0.5, 1.0],
-      ).createShader(
-        Rect.fromLTWH(0, 0, size.width, size.height),
-      )
-      ..style = PaintingStyle.fill;
+      ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
 
-    final path = Path();
-    final waveHeight = 8.0;
-    final waveLength = size.width / 1.5;
-    final waterLevel = size.height * (1 - progress.clamp(0.0, 1.0));
+    double surface(double x, {double phase = 0, double amp = 1}) =>
+        waterLevel +
+        waveHeight *
+            amp *
+            math.sin(
+              x / waveLength * 2 * math.pi +
+                  animationValue * 2 * math.pi +
+                  phase,
+            );
 
-    // Start path from left
-    path.moveTo(0, waterLevel);
-
-    // Create wave effect
-    for (double x = 0; x <= size.width; x += 1) {
-      final y1 = waterLevel +
-          waveHeight *
-              math.sin(
-                (x / waveLength * 2 * math.pi) + (animationValue * 2 * math.pi),
-              );
-      
-      final y2 = waterLevel +
-          waveHeight *
-              0.5 *
-              math.sin(
-                (x / waveLength * 3 * math.pi) -
-                    (animationValue * 1.5 * math.pi),
-              );
-      
-      path.lineTo(x, y1 + y2);
+    // Back wave (lighter), then the main wave on top for depth.
+    final back = Path()..moveTo(0, size.height);
+    for (double x = 0; x <= size.width; x += 2) {
+      back.lineTo(x, surface(x, phase: math.pi / 2, amp: 0.8));
     }
+    back
+      ..lineTo(size.width, size.height)
+      ..close();
+    canvas.drawPath(
+      back,
+      Paint()..color = AppTheme.lightCyan.withValues(alpha: 0.35),
+    );
 
-    // Complete the path
-    path.lineTo(size.width, size.height);
-    path.lineTo(0, size.height);
-    path.close();
-
-    canvas.drawPath(path, paint);
-
-    // Add shimmer effect on top of water
-    if (progress > 0.05) {
-      final shimmerPaint = Paint()
-        ..shader = LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            Colors.white.withOpacity(0.3),
-            Colors.transparent,
-          ],
-        ).createShader(
-          Rect.fromLTWH(
-            0,
-            waterLevel - 20,
-            size.width,
-            20,
-          ),
-        )
-        ..style = PaintingStyle.fill;
-
-      final shimmerPath = Path();
-      shimmerPath.moveTo(0, waterLevel);
-
-      for (double x = 0; x <= size.width; x += 1) {
-        final y = waterLevel +
-            waveHeight *
-                math.sin(
-                  (x / waveLength * 2 * math.pi) +
-                      (animationValue * 2 * math.pi),
-                );
-        shimmerPath.lineTo(x, y);
-      }
-
-      shimmerPath.lineTo(size.width, waterLevel - 20);
-      shimmerPath.lineTo(0, waterLevel - 20);
-      shimmerPath.close();
-
-      canvas.drawPath(shimmerPath, shimmerPaint);
+    final front = Path()..moveTo(0, size.height);
+    for (double x = 0; x <= size.width; x += 2) {
+      front.lineTo(x, surface(x));
     }
+    front
+      ..lineTo(size.width, size.height)
+      ..close();
+    canvas.drawPath(front, paint);
   }
 
   @override
-  bool shouldRepaint(WavePainter oldDelegate) {
-    return oldDelegate.progress != progress ||
-        oldDelegate.animationValue != animationValue;
-  }
+  bool shouldRepaint(WavePainter old) =>
+      old.progress != progress || old.animationValue != animationValue;
 }

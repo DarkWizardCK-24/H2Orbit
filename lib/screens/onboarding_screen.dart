@@ -15,34 +15,34 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   final PageController _pageController = PageController();
   int _currentPage = 0;
 
-  final List<OnboardingPage> _pages = [
-    OnboardingPage(
+  static const List<_OnboardingPage> _pages = [
+    _OnboardingPage(
       animation: 'assets/animations/water2.json',
-      title: 'Stay Hydrated',
+      title: 'Stay hydrated',
       description:
-          'Track your daily water intake and build healthy hydration habits',
-      gradient: const LinearGradient(
+          'Log every glass in one tap and build a daily hydration habit.',
+      gradient: LinearGradient(
         colors: [Color(0xFF0A1828), Color(0xFF178582)],
         begin: Alignment.topCenter,
         end: Alignment.bottomCenter,
       ),
     ),
-    OnboardingPage(
+    _OnboardingPage(
       animation: 'assets/animations/brain.json',
-      title: 'AI-Powered Insights',
+      title: 'Smart tips',
       description:
-          'Smart predictions based on your lifestyle, weather, and activity',
-      gradient: const LinearGradient(
+          'Suggestions based on the time of day, your progress and the weather.',
+      gradient: LinearGradient(
         colors: [Color(0xFF178582), Color(0xFF1565C0)],
         begin: Alignment.topCenter,
         end: Alignment.bottomCenter,
       ),
     ),
-    OnboardingPage(
+    _OnboardingPage(
       animation: 'assets/animations/bell.json',
-      title: 'Smart Reminders',
-      description: 'Get personalized notifications to keep you on track',
-      gradient: const LinearGradient(
+      title: 'Gentle reminders',
+      description: 'Choose when to be nudged, and celebrate your streaks.',
+      gradient: LinearGradient(
         colors: [Color(0xFF1565C0), Color(0xFF4DD0E1)],
         begin: Alignment.topCenter,
         end: Alignment.bottomCenter,
@@ -50,21 +50,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     ),
   ];
 
-  void _onPageChanged(int page) {
-    setState(() {
-      _currentPage = page;
-    });
-  }
+  bool get _isLast => _currentPage == _pages.length - 1;
 
-  Future<void> _completeOnboarding() async {
+  Future<void> _complete() async {
+    final navigator = Navigator.of(context);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('hasSeenOnboarding', true);
-
-    if (!mounted) return;
-
-    Navigator.of(
-      context,
-    ).pushReplacement(MaterialPageRoute(builder: (_) => const AuthScreen()));
+    navigator.pushReplacement(
+      MaterialPageRoute<void>(builder: (_) => const AuthScreen()),
+    );
   }
 
   @override
@@ -78,76 +72,75 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     return Scaffold(
       body: Stack(
         children: [
-          // PageView
           PageView.builder(
             controller: _pageController,
-            onPageChanged: _onPageChanged,
+            onPageChanged: (page) => setState(() => _currentPage = page),
             itemCount: _pages.length,
-            itemBuilder: (context, index) {
-              return _buildPage(_pages[index]);
-            },
+            itemBuilder: (context, index) => _PageView(page: _pages[index]),
           ),
-
-          // Bottom controls (dots and buttons)
           Positioned(
             bottom: 0,
             left: 0,
             right: 0,
             child: SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.all(24.0),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // Dots indicator
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: List.generate(
-                        _pages.length,
-                        (index) => _buildDot(index),
-                      ),
-                    ),
-                    const SizedBox(height: 32),
-
-                    // Buttons
-                    _currentPage == _pages.length - 1
-                        ? AnimatedButton(
-                            text: 'Get Started',
-                            onPressed: _completeOnboarding,
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 480),
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            for (var i = 0; i < _pages.length; i++)
+                              AnimatedContainer(
+                                duration: const Duration(milliseconds: 300),
+                                margin: const EdgeInsets.symmetric(
+                                  horizontal: 4,
+                                ),
+                                height: 8,
+                                width: _currentPage == i ? 26 : 8,
+                                decoration: BoxDecoration(
+                                  color: _currentPage == i
+                                      ? Colors.white
+                                      : Colors.white.withValues(alpha: 0.4),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 28),
+                        if (_isLast)
+                          AnimatedButton(
+                            text: 'Get started',
+                            onPressed: _complete,
                           )
-                        : Row(
+                        else
+                          Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
                               TextButton(
-                                onPressed: _completeOnboarding,
+                                onPressed: _complete,
                                 style: TextButton.styleFrom(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 24,
-                                    vertical: 12,
-                                  ),
+                                  foregroundColor: Colors.white70,
                                 ),
-                                child: const Text(
-                                  'Skip',
-                                  style: TextStyle(
-                                    color: Colors.white70,
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
+                                child: const Text('Skip'),
                               ),
                               AnimatedButton(
                                 text: 'Next',
-                                onPressed: () {
-                                  _pageController.nextPage(
-                                    duration: const Duration(milliseconds: 300),
-                                    curve: Curves.easeInOut,
-                                  );
-                                },
-                                width: 120,
+                                width: 130,
+                                onPressed: () => _pageController.nextPage(
+                                  duration: const Duration(milliseconds: 300),
+                                  curve: Curves.easeInOut,
+                                ),
                               ),
                             ],
                           ),
-                  ],
+                      ],
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -156,88 +149,71 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       ),
     );
   }
+}
 
-  Widget _buildPage(OnboardingPage page) {
+class _PageView extends StatelessWidget {
+  final _OnboardingPage page;
+
+  const _PageView({required this.page});
+
+  @override
+  Widget build(BuildContext context) {
     return Container(
       decoration: BoxDecoration(gradient: page.gradient),
       child: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 48),
-          child: Column(
-            children: [
-              const Spacer(),
-
-              // Animation
-              Lottie.asset(
-                page.animation,
-                width: 280,
-                height: 280,
-                fit: BoxFit.contain,
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 480),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 32),
+              child: Column(
+                children: [
+                  const Spacer(flex: 2),
+                  Lottie.asset(
+                    page.animation,
+                    width: 270,
+                    height: 270,
+                    fit: BoxFit.contain,
+                  ),
+                  const SizedBox(height: 36),
+                  Text(
+                    page.title,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 30,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Text(
+                    page.description,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: Colors.white.withValues(alpha: 0.88),
+                      height: 1.55,
+                    ),
+                  ),
+                  const Spacer(flex: 3),
+                  const SizedBox(height: 110),
+                ],
               ),
-
-              const SizedBox(height: 48),
-
-              // Title
-              Text(
-                page.title,
-                style: const TextStyle(
-                  fontSize: 32,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
-                  letterSpacing: 0.5,
-                ),
-                textAlign: TextAlign.center,
-              ),
-
-              const SizedBox(height: 16),
-
-              // Description
-              Text(
-                page.description,
-                style: TextStyle(
-                  fontSize: 16,
-                  color: Colors.white.withOpacity(0.85),
-                  height: 1.6,
-                  letterSpacing: 0.2,
-                ),
-                textAlign: TextAlign.center,
-              ),
-
-              const Spacer(),
-
-              // Space for bottom controls
-              const SizedBox(height: 120),
-            ],
+            ),
           ),
         ),
       ),
     );
   }
-
-  Widget _buildDot(int index) {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 300),
-      curve: Curves.easeInOut,
-      margin: const EdgeInsets.symmetric(horizontal: 4),
-      height: 8,
-      width: _currentPage == index ? 24 : 8,
-      decoration: BoxDecoration(
-        color: _currentPage == index
-            ? Colors.white
-            : Colors.white.withOpacity(0.4),
-        borderRadius: BorderRadius.circular(4),
-      ),
-    );
-  }
 }
 
-class OnboardingPage {
+class _OnboardingPage {
   final String animation;
   final String title;
   final String description;
   final Gradient gradient;
 
-  OnboardingPage({
+  const _OnboardingPage({
     required this.animation,
     required this.title,
     required this.description,

@@ -1,15 +1,21 @@
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:h2orbit/domain/hydration_math.dart';
 import 'package:h2orbit/models/user_model.dart';
 import 'package:h2orbit/screens/auth_screen.dart';
 import 'package:h2orbit/screens/notification_settings_screen.dart';
 import 'package:h2orbit/services/auth_service.dart';
+import 'package:h2orbit/services/firebase_service.dart';
+import 'package:h2orbit/utils/breakpoints.dart';
+import 'package:h2orbit/utils/constants.dart';
+import 'package:h2orbit/utils/helpers.dart';
+import 'package:h2orbit/utils/snackbar.dart';
 import 'package:h2orbit/utils/theme.dart';
 import 'package:h2orbit/widgets/animated_button.dart';
 import 'package:h2orbit/widgets/glass_container.dart';
+import 'package:h2orbit/widgets/ocean_scaffold.dart';
+import 'package:h2orbit/widgets/side_rail.dart';
 import 'package:h2orbit/widgets/scroll_picker.dart';
+import 'package:provider/provider.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -19,77 +25,32 @@ class ProfileScreen extends StatefulWidget {
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
-  final String userId = FirebaseAuth.instance.currentUser!.uid;
-  UserModel? currentUser;
-  bool isEditing = false;
-
-  // Controllers
+  final _formKey = GlobalKey<FormState>();
   final _nameController = TextEditingController();
   final _phoneController = TextEditingController();
 
-  // Editable values
-  int selectedHeight = 170;
-  int selectedWeight = 70;
-  int selectedTarget = 8;
-  String selectedGender = 'Male';
-  DateTime selectedDate = DateTime.now().subtract(const Duration(days: 7300));
+  UserModel? _user;
+  bool _loading = true;
+  bool _editing = false;
+  bool _busy = false;
+  String? _loadError;
+
+  // Values being edited.
+  int _height = 170;
+  int _weight = 70;
+  int _target = AppConstants.defaultWaterTarget;
+  String _gender = 'Male';
+  DateTime _birthDate = DateTime(2000);
+
+  /// Bumped to rebuild the wheels when "Apply" jumps one to a new value.
+  int _wheelResets = 0;
+
+  String get _userId => context.read<AuthService>().userId!;
 
   @override
   void initState() {
     super.initState();
-    _loadUserData();
-  }
-
-  Future<void> _loadUserData() async {
-    final doc = await FirebaseFirestore.instance
-        .collection('users')
-        .doc(userId)
-        .get();
-
-    if (doc.exists) {
-      setState(() {
-        currentUser = UserModel.fromFirestore(doc);
-        _nameController.text = currentUser!.name;
-        _phoneController.text = currentUser!.phone;
-        selectedHeight = currentUser!.heightCm;
-        selectedWeight = currentUser!.weightKg;
-        selectedTarget = currentUser!.dailyGlassTarget;
-        selectedGender = currentUser!.gender;
-        selectedDate = currentUser!.dateOfBirth;
-      });
-    }
-  }
-
-  Future<void> _updateProfile() async {
-    setState(() => isEditing = false);
-
-    final updatedData = {
-      'name': _nameController.text.trim(),
-      'phone': _phoneController.text.trim(),
-      'heightCm': selectedHeight,
-      'weightKg': selectedWeight,
-      'dailyGlassTarget': selectedTarget,
-      'gender': selectedGender,
-      'dateOfBirth': Timestamp.fromDate(selectedDate),
-      'age': UserModel.calculateAge(selectedDate),
-      'updatedAt': FieldValue.serverTimestamp(),
-    };
-
-    await FirebaseFirestore.instance
-        .collection('users')
-        .doc(userId)
-        .update(updatedData);
-
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Profile updated successfully! ✓'),
-        backgroundColor: AppTheme.oceanBlue,
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-
-    _loadUserData();
+    _load();
   }
 
   @override
@@ -99,479 +60,726 @@ class _ProfileScreenState extends State<ProfileScreen> {
     super.dispose();
   }
 
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _loadError = null;
+    });
+    try {
+      final user = await context.read<HydrationRepository>().getUser(_userId);
+      if (!mounted) return;
+      setState(() {
+        _user = user;
+        if (user != null) _fillEditor(user);
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _loadError = "We couldn't load your profile.";
+      });
+    }
+  }
+
+  void _fillEditor(UserModel user) {
+    _nameController.text = user.name;
+    _phoneController.text = user.phone;
+    _height = user.heightCm;
+    _weight = user.weightKg;
+    _target = user.dailyGlassTarget;
+    _gender = user.gender.isEmpty ? 'Male' : user.gender;
+    _birthDate = user.dateOfBirth;
+  }
+
+  Future<void> _save() async {
+    final user = _user;
+    if (user == null || !(_formKey.currentState?.validate() ?? false)) return;
+    setState(() => _busy = true);
+    try {
+      final updated = user.copyWith(
+        name: _nameController.text.trim(),
+        phone: _phoneController.text.trim(),
+        dateOfBirth: _birthDate,
+        gender: _gender,
+        heightCm: _height,
+        weightKg: _weight,
+        dailyGlassTarget: _target,
+      );
+      await context.read<HydrationRepository>().saveUser(updated);
+      if (!mounted) return;
+      setState(() {
+        _user = updated;
+        _editing = false;
+      });
+      showAppSnack(context, 'Profile updated');
+    } catch (e) {
+      if (mounted) {
+        showAppSnack(context, "Couldn't save your profile.", isError: true);
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  void _cancelEdit() {
+    final user = _user;
+    setState(() {
+      if (user != null) _fillEditor(user);
+      _wheelResets++;
+      _editing = false;
+    });
+  }
+
+  Future<void> _signOut() async {
+    final auth = context.read<AuthService>();
+    final navigator = Navigator.of(context);
+    await auth.signOut();
+    navigator.pushAndRemoveUntil(
+      MaterialPageRoute<void>(builder: (_) => const AuthScreen()),
+      (route) => false,
+    );
+  }
+
+  Future<void> _deleteAccount() async {
+    final password = await showDialog<String>(
+      context: context,
+      builder: (_) => const _DeleteAccountDialog(),
+    );
+    if (password == null || !mounted) return;
+
+    final auth = context.read<AuthService>();
+    final repo = context.read<HydrationRepository>();
+    final navigator = Navigator.of(context);
+    final uid = _userId;
+    setState(() => _busy = true);
+    try {
+      // Order matters: data can only be deleted while still signed in.
+      await auth.reauthenticate(password);
+      await repo.deleteAllUserData(uid);
+      await auth.deleteAccount();
+      navigator.pushAndRemoveUntil(
+        MaterialPageRoute<void>(builder: (_) => const AuthScreen()),
+        (route) => false,
+      );
+    } on AuthFailure catch (e) {
+      if (mounted) showAppSnack(context, e.message, isError: true);
+    } catch (e) {
+      if (mounted) {
+        showAppSnack(
+          context,
+          "Couldn't delete your account. Please try again.",
+          isError: true,
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    if (currentUser == null) {
-      return const Scaffold(
-        body: Center(
-          child: CircularProgressIndicator(color: AppTheme.lightCyan),
+    return OceanScaffold(
+      title: 'Profile',
+      section: AppSection.profile,
+      actions: [
+        if (_user != null && !_editing)
+          IconButton(
+            tooltip: 'Edit profile',
+            icon: const Icon(Icons.edit_outlined, color: Colors.white),
+            onPressed: () => setState(() => _editing = true),
+          ),
+      ],
+      body: _body(),
+    );
+  }
+
+  Widget _body() {
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    final user = _user;
+    if (user == null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.person_off_outlined,
+                size: 56,
+                color: Colors.white70,
+              ),
+              const SizedBox(height: 16),
+              Text(
+                _loadError ?? 'No profile found for this account.',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white70),
+              ),
+              const SizedBox(height: 20),
+              FilledButton(onPressed: _load, child: const Text('Try again')),
+            ],
+          ),
         ),
       );
     }
 
-    return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(gradient: AppTheme.oceanGradient),
-        child: SafeArea(
-          child: CustomScrollView(
-            slivers: [
-              SliverAppBar(
-                expandedHeight: 120,
-                floating: false,
-                pinned: true,
-                backgroundColor: Colors.transparent,
-                flexibleSpace: FlexibleSpaceBar(
-                  title: const Text(
-                    'Profile',
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                    ),
-                  ),
-                  background: Container(
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [
-                          AppTheme.oceanBlue.withOpacity(0.3),
-                          Colors.transparent,
-                        ],
-                      ),
-                    ),
-                  ),
+    if (Breakpoints.isWide(context)) {
+      return Form(
+        key: _formKey,
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(28, 4, 28, 32),
+          children: [
+            _Avatar(user: user),
+            const SizedBox(height: 24),
+            if (_editing)
+              Align(
+                alignment: Alignment.topCenter,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 720),
+                  child: Column(children: _editSections()),
                 ),
-                leading: IconButton(
-                  icon: const Icon(
-                    Icons.arrow_back,
-                    color: Colors.white,
-                    size: 24,
-                  ),
-                  onPressed: () => Navigator.pop(context),
-                ),
-                actions: [
-                  if (!isEditing)
-                    IconButton(
-                      icon: const Icon(
-                        Icons.edit,
-                        color: Colors.white,
-                        size: 24,
-                      ),
-                      onPressed: () => setState(() => isEditing = true),
-                    ),
-                ],
-              ),
-              SliverPadding(
-                padding: const EdgeInsets.all(20),
-                sliver: SliverList(
-                  delegate: SliverChildListDelegate([
-                    // Profile Avatar
-                    Center(
-                      child: Container(
-                        width: 120,
-                        height: 120,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          gradient: const LinearGradient(
-                            colors: [AppTheme.lightCyan, AppTheme.oceanBlue],
-                          ),
-                          boxShadow: [
-                            BoxShadow(
-                              color: AppTheme.lightCyan.withOpacity(0.4),
-                              blurRadius: 20,
-                              spreadRadius: 5,
-                            ),
-                          ],
-                        ),
-                        child: const Icon(
-                          FontAwesomeIcons.user,
-                          size: 50,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 30),
-
-                    // Basic Info
-                    GlassContainer(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            'Basic Information',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          const SizedBox(height: 20),
-                          if (isEditing)
-                            TextField(
-                              controller: _nameController,
-                              style: const TextStyle(color: Colors.white),
-                              decoration: InputDecoration(
-                                labelText: 'Name',
-                                labelStyle: TextStyle(
-                                  color: Colors.white.withOpacity(0.7),
-                                ),
-                                enabledBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(10),
-                                  borderSide: BorderSide(
-                                    color: Colors.white.withOpacity(0.3),
-                                  ),
-                                ),
-                                focusedBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(10),
-                                  borderSide: const BorderSide(
-                                    color: AppTheme.lightCyan,
-                                  ),
-                                ),
-                              ),
-                            )
-                          else
-                            _buildInfoRow(
-                              FontAwesomeIcons.user,
-                              'Name',
-                              currentUser!.name,
-                            ),
-                          const SizedBox(height: 15),
-                          _buildInfoRow(
-                            FontAwesomeIcons.envelope,
-                            'Email',
-                            currentUser!.email,
-                          ),
-                          const SizedBox(height: 15),
-                          if (isEditing)
-                            TextField(
-                              controller: _phoneController,
-                              style: const TextStyle(color: Colors.white),
-                              keyboardType: TextInputType.phone,
-                              decoration: InputDecoration(
-                                labelText: 'Phone',
-                                labelStyle: TextStyle(
-                                  color: Colors.white.withOpacity(0.7),
-                                ),
-                                enabledBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(10),
-                                  borderSide: BorderSide(
-                                    color: Colors.white.withOpacity(0.3),
-                                  ),
-                                ),
-                                focusedBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(10),
-                                  borderSide: const BorderSide(
-                                    color: AppTheme.lightCyan,
-                                  ),
-                                ),
-                              ),
-                            )
-                          else
-                            _buildInfoRow(
-                              FontAwesomeIcons.phone,
-                              'Phone',
-                              currentUser!.phone,
-                            ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-
-                    // Personal Details
-                    GlassContainer(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            'Personal Details',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          const SizedBox(height: 20),
-                          _buildInfoRow(
-                            FontAwesomeIcons.cakeCandles,
-                            'Age',
-                            '${currentUser!.age} years',
-                          ),
-                          const SizedBox(height: 15),
-                          if (isEditing)
-                            ListTile(
-                              contentPadding: EdgeInsets.zero,
-                              leading: const Icon(
-                                FontAwesomeIcons.personDress,
-                                color: AppTheme.lightCyan,
-                                size: 20,
-                              ),
-                              title: Text(
-                                'Gender: $selectedGender',
-                                style: const TextStyle(color: Colors.white),
-                              ),
-                              trailing: const Icon(
-                                Icons.arrow_forward_ios,
-                                color: Colors.white70,
-                                size: 16,
-                              ),
-                              onTap: () => _showGenderPicker(),
-                            )
-                          else
-                            _buildInfoRow(
-                              FontAwesomeIcons.personDress,
-                              'Gender',
-                              currentUser!.gender,
-                            ),
-                          const SizedBox(height: 15),
-                          _buildInfoRow(
-                            FontAwesomeIcons.calendar,
-                            'Date of Birth',
-                            '${selectedDate.day}/${selectedDate.month}/${selectedDate.year}',
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-
-                    // Health Metrics
-                    if (isEditing)
-                      GlassContainer(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'Health Metrics',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            const SizedBox(height: 20),
-                            const Text(
-                              'Height (cm)',
-                              style: TextStyle(color: Colors.white70),
-                            ),
-                            const SizedBox(height: 10),
-                            ScrollPicker(
-                              initialValue: selectedHeight,
-                              minValue: 120,
-                              maxValue: 220,
-                              onChanged: (v) =>
-                                  setState(() => selectedHeight = v),
-                            ),
-                            const SizedBox(height: 20),
-                            const Text(
-                              'Weight (kg)',
-                              style: TextStyle(color: Colors.white70),
-                            ),
-                            const SizedBox(height: 10),
-                            ScrollPicker(
-                              initialValue: selectedWeight,
-                              minValue: 30,
-                              maxValue: 200,
-                              onChanged: (v) =>
-                                  setState(() => selectedWeight = v),
-                            ),
-                            const SizedBox(height: 20),
-                            const Text(
-                              'Daily Target (glasses)',
-                              style: TextStyle(color: Colors.white70),
-                            ),
-                            const SizedBox(height: 10),
-                            ScrollPicker(
-                              initialValue: selectedTarget,
-                              minValue: 4,
-                              maxValue: 16,
-                              onChanged: (v) =>
-                                  setState(() => selectedTarget = v),
-                            ),
-                          ],
-                        ),
-                      )
-                    else
-                      GlassContainer(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'Health Metrics',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            const SizedBox(height: 20),
-                            _buildInfoRow(
-                              FontAwesomeIcons.ruler,
-                              'Height',
-                              '${currentUser!.heightCm} cm',
-                            ),
-                            const SizedBox(height: 15),
-                            _buildInfoRow(
-                              FontAwesomeIcons.weightScale,
-                              'Weight',
-                              '${currentUser!.weightKg} kg',
-                            ),
-                            const SizedBox(height: 15),
-                            _buildInfoRow(
-                              FontAwesomeIcons.glassWater,
-                              'Daily Target',
-                              '${currentUser!.dailyGlassTarget} glasses',
-                            ),
-                          ],
-                        ),
-                      ),
-                    const SizedBox(height: 20),
-
-                    // Settings & Preferences (Only shown when not editing)
-                    if (!isEditing)
-                      GlassContainer(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'Settings & Preferences',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-
-                            // Notifications
-                            _buildSettingsTile(
-                              icon: FontAwesomeIcons.bell,
-                              title: 'Notifications',
-                              subtitle: 'Manage reminders and alerts',
-                              onTap: () {
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (_) =>
-                                        const NotificationSettingsScreen(),
-                                  ),
-                                );
-                              },
-                            ),
-
-                            const Divider(color: Colors.white24, height: 24),
-
-                            // Privacy
-                            _buildSettingsTile(
-                              icon: FontAwesomeIcons.lock,
-                              title: 'Privacy',
-                              subtitle: 'Data and security settings',
-                              onTap: () {
-                                _showPrivacyDialog();
-                              },
-                            ),
-
-                            const Divider(color: Colors.white24, height: 24),
-
-                            // Help & Support
-                            _buildSettingsTile(
-                              icon: FontAwesomeIcons.circleQuestion,
-                              title: 'Help & Support',
-                              subtitle: 'Get help and contact us',
-                              onTap: () {
-                                _showHelpDialog();
-                              },
-                            ),
-
-                            const Divider(color: Colors.white24, height: 24),
-
-                            // About
-                            _buildSettingsTile(
-                              icon: FontAwesomeIcons.circleInfo,
-                              title: 'About H₂Orbit',
-                              subtitle: 'Version 1.0.0',
-                              onTap: () {
-                                _showAboutDialog();
-                              },
-                            ),
-                          ],
-                        ),
-                      ),
-                    const SizedBox(height: 20),
-
-                    // Action Buttons
-                    if (isEditing)
-                      Column(
-                        children: [
-                          AnimatedButton(
-                            text: 'Save Changes',
-                            onPressed: _updateProfile,
-                          ),
-                          const SizedBox(height: 10),
-                          TextButton(
-                            onPressed: () {
-                              setState(() => isEditing = false);
-                              _loadUserData();
-                            },
-                            child: const Text(
-                              'Cancel',
-                              style: TextStyle(
-                                color: Colors.white70,
-                                fontSize: 16,
-                              ),
-                            ),
-                          ),
-                        ],
-                      )
-                    else
-                      Column(
-                        children: [
-                          AnimatedButton(
-                            text: 'Sign Out',
-                            onPressed: () async {
-                              await AuthService().signOut();
-                              if (!mounted) return;
-                              Navigator.of(context).pushAndRemoveUntil(
-                                MaterialPageRoute(
-                                  builder: (_) => const AuthScreen(),
-                                ),
-                                (route) => false,
-                              );
-                            },
-                          ),
-                          const SizedBox(height: 16),
-                          TextButton(
-                            onPressed: () {
-                              _showDeleteAccountDialog();
-                            },
-                            child: const Text(
-                              'Delete Account',
-                              style: TextStyle(color: Colors.red, fontSize: 14),
-                            ),
-                          ),
-                        ],
-                      ),
-                    const SizedBox(height: 20),
-                  ]),
-                ),
-              ),
-            ],
-          ),
+              )
+            else
+              _wideView(user),
+          ],
         ),
+      );
+    }
+
+    return Form(
+      key: _formKey,
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(20, 4, 20, 32),
+        children: [
+          _Avatar(user: user),
+          const SizedBox(height: 24),
+          if (_editing) ..._editSections() else ..._viewSections(user),
+        ],
       ),
     );
   }
 
-  Widget _buildInfoRow(IconData icon, String label, String value) {
+  // ---------------- view mode ----------------
+
+  /// Wide windows: details on the left, settings and account actions on the
+  /// right (the same sections as on a phone).
+  Widget _wideView(UserModel user) {
+    final sections = _viewSections(user);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: sections.sublist(0, 5),
+          ),
+        ),
+        const SizedBox(width: 24),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: sections.sublist(6),
+          ),
+        ),
+      ],
+    );
+  }
+
+  List<Widget> _viewSections(UserModel user) {
+    final bmi = HydrationMath.bmi(
+      weightKg: user.weightKg,
+      heightCm: user.heightCm,
+    );
+    final recommended = HydrationMath.recommendedDailyMl(
+      weightKg: user.weightKg,
+      age: user.age,
+      gender: user.gender,
+    );
+
+    return [
+      GlassContainer(
+        child: Column(
+          children: [
+            _InfoRow(Icons.person_outline_rounded, 'Name', user.name),
+            const SizedBox(height: 16),
+            _InfoRow(Icons.email_outlined, 'Email', user.email),
+            const SizedBox(height: 16),
+            _InfoRow(
+              Icons.phone_outlined,
+              'Phone',
+              user.phone.isEmpty ? 'Not set' : user.phone,
+            ),
+            const SizedBox(height: 16),
+            _InfoRow(
+              Icons.cake_outlined,
+              'Date of birth',
+              '${Fmt.date(user.dateOfBirth)}  ·  ${user.age} years',
+            ),
+            const SizedBox(height: 16),
+            _InfoRow(
+              Icons.wc_rounded,
+              'Gender',
+              user.gender.isEmpty ? 'Not set' : user.gender,
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 16),
+      Row(
+        children: [
+          Expanded(
+            child: _MetricCard(
+              icon: Icons.straighten_rounded,
+              label: 'Height',
+              value: '${user.heightCm} cm',
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: _MetricCard(
+              icon: Icons.monitor_weight_outlined,
+              label: 'Weight',
+              value: '${user.weightKg} kg',
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: _MetricCard(
+              icon: Icons.favorite_border_rounded,
+              label: 'BMI',
+              value: bmi.toStringAsFixed(1),
+              caption: HydrationMath.bmiCategory(bmi),
+            ),
+          ),
+        ],
+      ),
+      const SizedBox(height: 16),
+      GlassContainer(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.water_drop_rounded, color: AppTheme.lightCyan),
+                const SizedBox(width: 10),
+                const Text(
+                  'Daily goal',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 16,
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  '${user.dailyGlassTarget} glasses',
+                  style: const TextStyle(
+                    color: AppTheme.lightCyan,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '${Fmt.ml(user.dailyGoalMl)} a day. For your weight and age, '
+              'about ${Fmt.ml(recommended)} is typical.',
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.7),
+                fontSize: 13,
+                height: 1.4,
+              ),
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 16),
+      GlassContainer(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+        child: Column(
+          children: [
+            _SettingsTile(
+              icon: Icons.notifications_none_rounded,
+              title: 'Notifications',
+              subtitle: 'Reminders and achievement alerts',
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute<void>(
+                  builder: (_) => const NotificationSettingsScreen(),
+                ),
+              ),
+            ),
+            const Divider(height: 1),
+            _SettingsTile(
+              icon: Icons.menu_book_rounded,
+              title: 'How H2Orbit works',
+              subtitle: 'Goals, streaks and tips explained',
+              onTap: _showHowItWorks,
+            ),
+            const Divider(height: 1),
+            _SettingsTile(
+              icon: Icons.lock_outline_rounded,
+              title: 'Privacy',
+              subtitle: 'What is stored and where',
+              onTap: _showPrivacy,
+            ),
+            const Divider(height: 1),
+            _SettingsTile(
+              icon: Icons.info_outline_rounded,
+              title: 'About',
+              subtitle: 'Version ${AppConstants.appVersion}',
+              onTap: _showAbout,
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 28),
+      AnimatedButton(
+        text: 'Sign out',
+        icon: Icons.logout_rounded,
+        onPressed: _busy ? null : _signOut,
+      ),
+      const SizedBox(height: 8),
+      TextButton(
+        onPressed: _busy ? null : _deleteAccount,
+        style: TextButton.styleFrom(foregroundColor: AppTheme.danger),
+        child: const Text('Delete account'),
+      ),
+    ];
+  }
+
+  // ---------------- edit mode ----------------
+
+  List<Widget> _editSections() {
+    final age = UserModel.calculateAge(_birthDate);
+    final recommended = HydrationMath.recommendedGlasses(
+      weightKg: _weight,
+      age: age,
+      gender: _gender,
+    );
+
+    return [
+      GlassContainer(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextFormField(
+              controller: _nameController,
+              textCapitalization: TextCapitalization.words,
+              validator: (v) => Validators.required(v, 'Enter your name'),
+              decoration: const InputDecoration(
+                labelText: 'Name',
+                prefixIcon: Icon(Icons.person_outline_rounded),
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextFormField(
+              controller: _phoneController,
+              keyboardType: TextInputType.phone,
+              validator: Validators.phone,
+              decoration: const InputDecoration(
+                labelText: 'Phone',
+                prefixIcon: Icon(Icons.phone_outlined),
+              ),
+            ),
+            const SizedBox(height: 20),
+            Text(
+              'Gender',
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.65),
+                fontSize: 12.5,
+              ),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: SegmentedButton<String>(
+                showSelectedIcon: false,
+                segments: const [
+                  ButtonSegment(value: 'Male', label: Text('Male')),
+                  ButtonSegment(value: 'Female', label: Text('Female')),
+                  ButtonSegment(value: 'Other', label: Text('Other')),
+                ],
+                selected: {_gender},
+                onSelectionChanged: (s) => setState(() => _gender = s.first),
+                style: SegmentedButton.styleFrom(
+                  foregroundColor: Colors.white,
+                  selectedBackgroundColor: AppTheme.lightCyan,
+                  selectedForegroundColor: AppTheme.darkBackground,
+                  side: BorderSide(color: Colors.white.withValues(alpha: 0.25)),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: () async {
+                final date = await showDatePicker(
+                  context: context,
+                  initialDate: _birthDate,
+                  firstDate: DateTime(1920),
+                  lastDate: DateTime.now(),
+                );
+                if (date != null) setState(() => _birthDate = date);
+              },
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                child: Row(
+                  children: [
+                    const Icon(Icons.cake_outlined, color: AppTheme.lightCyan),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        'Born ${Fmt.date(_birthDate)}  ·  $age years',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 15,
+                        ),
+                      ),
+                    ),
+                    const Icon(
+                      Icons.edit_calendar_outlined,
+                      color: Colors.white54,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 16),
+      GlassContainer(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _label('Height (cm)'),
+            ScrollPicker(
+              key: ValueKey('h$_wheelResets'),
+              initialValue: _height,
+              minValue: 120,
+              maxValue: 220,
+              onChanged: (v) => _height = v,
+            ),
+            const SizedBox(height: 20),
+            _label('Weight (kg)'),
+            ScrollPicker(
+              key: ValueKey('w$_wheelResets'),
+              initialValue: _weight,
+              minValue: 30,
+              maxValue: 200,
+              onChanged: (v) => setState(() => _weight = v),
+            ),
+            const SizedBox(height: 20),
+            _label('Daily goal (glasses)'),
+            ScrollPicker(
+              key: ValueKey('t$_wheelResets'),
+              initialValue: _target,
+              minValue: AppConstants.minGlassTarget,
+              maxValue: AppConstants.maxGlassTarget,
+              onChanged: (v) => _target = v,
+            ),
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Suggested: $recommended glasses',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.8),
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+                TextButton(
+                  onPressed: () => setState(() {
+                    _target = recommended;
+                    _wheelResets++;
+                  }),
+                  child: const Text('Apply'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 28),
+      AnimatedButton(text: 'Save changes', loading: _busy, onPressed: _save),
+      const SizedBox(height: 8),
+      TextButton(
+        onPressed: _busy ? null : _cancelEdit,
+        child: const Text('Cancel'),
+      ),
+    ];
+  }
+
+  Widget _label(String text) => Padding(
+    padding: const EdgeInsets.only(bottom: 10),
+    child: Text(
+      text,
+      style: const TextStyle(
+        color: Colors.white,
+        fontWeight: FontWeight.w600,
+        fontSize: 14,
+      ),
+    ),
+  );
+
+  // ---------------- dialogs ----------------
+
+  void _showInfo(String title, IconData icon, Widget content) {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(icon, color: AppTheme.lightCyan),
+            const SizedBox(width: 12),
+            Expanded(child: Text(title)),
+          ],
+        ),
+        content: SingleChildScrollView(child: content),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showHowItWorks() => _showInfo(
+    'How H2Orbit works',
+    Icons.menu_book_rounded,
+    const Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Goal: your daily goal is set in glasses of 250 ml. On hot days '
+          '(with a weather key configured) a bonus is added automatically.',
+        ),
+        SizedBox(height: 12),
+        Text(
+          'Streak: a day counts when you reach your goal. Today does not '
+          'break your streak until the day is over.',
+        ),
+        SizedBox(height: 12),
+        Text(
+          'Tips: suggestions come from the time of day, your progress, the '
+          'weather and your profile.',
+        ),
+      ],
+    ),
+  );
+
+  void _showPrivacy() => _showInfo(
+    'Privacy',
+    Icons.lock_outline_rounded,
+    const Text(
+      'Your profile and the drinks you log are stored in your account on '
+      'Google Firebase. They are not shared with anyone else. Location is '
+      "only used, if you allow it, to look up your area's weather. You can "
+      'delete your account and all of its data at any time from this screen.',
+    ),
+  );
+
+  void _showAbout() => _showInfo(
+    'About H2Orbit',
+    Icons.water_drop_rounded,
+    Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'H2Orbit - your smart hydration companion',
+          style: TextStyle(fontWeight: FontWeight.w700, color: Colors.white),
+        ),
+        const SizedBox(height: 8),
+        Text('Version ${AppConstants.appVersion}'),
+        const SizedBox(height: 8),
+        const Text('Stay hydrated, stay healthy.'),
+      ],
+    ),
+  );
+}
+
+class _Avatar extends StatelessWidget {
+  final UserModel user;
+
+  const _Avatar({required this.user});
+
+  @override
+  Widget build(BuildContext context) {
+    final initial = user.name.trim().isEmpty
+        ? '?'
+        : user.name.trim()[0].toUpperCase();
+    return Column(
+      children: [
+        Container(
+          width: 96,
+          height: 96,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: AppTheme.buttonGradient,
+            boxShadow: [
+              BoxShadow(
+                color: AppTheme.lightCyan.withValues(alpha: 0.4),
+                blurRadius: 24,
+                spreadRadius: 2,
+              ),
+            ],
+          ),
+          child: Text(
+            initial,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 40,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+        const SizedBox(height: 14),
+        Text(
+          user.name.isEmpty ? 'Your profile' : user.name,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 22,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        Text(
+          user.email,
+          style: TextStyle(
+            color: Colors.white.withValues(alpha: 0.65),
+            fontSize: 13.5,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _InfoRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+
+  const _InfoRow(this.icon, this.label, this.value);
+
+  @override
+  Widget build(BuildContext context) {
     return Row(
       children: [
         Container(
           padding: const EdgeInsets.all(8),
           decoration: BoxDecoration(
-            color: AppTheme.lightCyan.withOpacity(0.2),
-            borderRadius: BorderRadius.circular(8),
+            color: AppTheme.lightCyan.withValues(alpha: 0.18),
+            borderRadius: BorderRadius.circular(10),
           ),
           child: Icon(icon, color: AppTheme.lightCyan, size: 18),
         ),
-        const SizedBox(width: 15),
+        const SizedBox(width: 14),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -579,16 +787,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
               Text(
                 label,
                 style: TextStyle(
-                  color: Colors.white.withOpacity(0.7),
+                  color: Colors.white.withValues(alpha: 0.6),
                   fontSize: 12,
                 ),
               ),
-              const SizedBox(height: 4),
               Text(
                 value,
                 style: const TextStyle(
                   color: Colors.white,
-                  fontSize: 16,
+                  fontSize: 15,
                   fontWeight: FontWeight.w500,
                 ),
               ),
@@ -598,275 +805,175 @@ class _ProfileScreenState extends State<ProfileScreen> {
       ],
     );
   }
+}
 
-  Widget _buildSettingsTile({
-    required IconData icon,
-    required String title,
-    required String subtitle,
-    required VoidCallback onTap,
-  }) {
-    return InkWell(
+class _MetricCard extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  final String? caption;
+
+  const _MetricCard({
+    required this.icon,
+    required this.label,
+    required this.value,
+    this.caption,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GlassContainer(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+      borderRadius: BorderRadius.circular(18),
+      child: Column(
+        children: [
+          Icon(icon, color: AppTheme.lightCyan, size: 22),
+          const SizedBox(height: 8),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              value,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 17,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          Text(
+            caption ?? label,
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.65),
+              fontSize: 12,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SettingsTile extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  const _SettingsTile({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        child: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: AppTheme.lightCyan.withOpacity(0.2),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: FaIcon(icon, color: AppTheme.lightCyan, size: 20),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w600,
-                      fontSize: 15,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    subtitle,
-                    style: const TextStyle(color: Colors.white70, fontSize: 12),
-                  ),
-                ],
-              ),
-            ),
-            const Icon(Icons.chevron_right, color: Colors.white54, size: 24),
-          ],
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      leading: Container(
+        padding: const EdgeInsets.all(9),
+        decoration: BoxDecoration(
+          color: AppTheme.lightCyan.withValues(alpha: 0.18),
+          borderRadius: BorderRadius.circular(10),
         ),
+        child: Icon(icon, color: AppTheme.lightCyan, size: 20),
+      ),
+      title: Text(
+        title,
+        style: const TextStyle(
+          color: Colors.white,
+          fontWeight: FontWeight.w600,
+          fontSize: 15,
+        ),
+      ),
+      subtitle: Text(
+        subtitle,
+        style: TextStyle(
+          color: Colors.white.withValues(alpha: 0.65),
+          fontSize: 12,
+        ),
+      ),
+      trailing: Icon(
+        Icons.chevron_right_rounded,
+        color: Colors.white.withValues(alpha: 0.5),
       ),
     );
   }
+}
 
-  void _showGenderPicker() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: AppTheme.deepCyan,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+class _DeleteAccountDialog extends StatefulWidget {
+  const _DeleteAccountDialog();
+
+  @override
+  State<_DeleteAccountDialog> createState() => _DeleteAccountDialogState();
+}
+
+class _DeleteAccountDialogState extends State<_DeleteAccountDialog> {
+  final _password = TextEditingController();
+  bool _obscure = true;
+
+  @override
+  void dispose() {
+    _password.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Row(
+        children: [
+          Icon(Icons.warning_amber_rounded, color: AppTheme.danger),
+          SizedBox(width: 12),
+          Expanded(child: Text('Delete account')),
+        ],
       ),
-      builder: (context) {
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: ['Male', 'Female', 'Other'].map((gender) {
-              return ListTile(
-                title: Text(
-                  gender,
-                  style: const TextStyle(color: Colors.white),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'This permanently deletes your account and every drink you have '
+            'logged. It cannot be undone. Enter your password to confirm.',
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _password,
+            obscureText: _obscure,
+            onChanged: (_) => setState(() {}),
+            decoration: InputDecoration(
+              labelText: 'Password',
+              prefixIcon: const Icon(Icons.lock_outline_rounded),
+              suffixIcon: IconButton(
+                tooltip: _obscure ? 'Show password' : 'Hide password',
+                icon: Icon(
+                  _obscure
+                      ? Icons.visibility_off_outlined
+                      : Icons.visibility_outlined,
                 ),
-                trailing: selectedGender == gender
-                    ? const Icon(Icons.check, color: AppTheme.lightCyan)
-                    : null,
-                onTap: () {
-                  setState(() => selectedGender = gender);
-                  Navigator.pop(context);
-                },
-              );
-            }).toList(),
-          ),
-        );
-      },
-    );
-  }
-
-  void _showPrivacyDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: AppTheme.deepCyan,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Row(
-          children: [
-            FaIcon(FontAwesomeIcons.lock, color: AppTheme.lightCyan, size: 24),
-            SizedBox(width: 12),
-            Text('Privacy', style: TextStyle(color: Colors.white)),
-          ],
-        ),
-        content: const Text(
-          'Your data is securely stored and encrypted. We never share your personal information with third parties.',
-          style: TextStyle(color: Colors.white70, height: 1.5),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text(
-              'Got it',
-              style: TextStyle(color: AppTheme.lightCyan),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showHelpDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: AppTheme.deepCyan,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Row(
-          children: [
-            FaIcon(
-              FontAwesomeIcons.circleQuestion,
-              color: AppTheme.lightCyan,
-              size: 24,
-            ),
-            SizedBox(width: 12),
-            Text('Help & Support', style: TextStyle(color: Colors.white)),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Need help? Contact us at:',
-              style: TextStyle(color: Colors.white70),
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              '📧 support@h2orbit.com',
-              style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.w600,
+                onPressed: () => setState(() => _obscure = !_obscure),
               ),
             ),
-            const SizedBox(height: 8),
-            const Text(
-              '🌐 www.h2orbit.com/help',
-              style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text(
-              'Close',
-              style: TextStyle(color: AppTheme.lightCyan),
-            ),
           ),
         ],
       ),
-    );
-  }
-
-  void _showAboutDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: AppTheme.deepCyan,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Row(
-          children: [
-            FaIcon(
-              FontAwesomeIcons.droplet,
-              color: AppTheme.lightCyan,
-              size: 24,
-            ),
-            SizedBox(width: 12),
-            Text('About H₂Orbit', style: TextStyle(color: Colors.white)),
-          ],
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
         ),
-        content: const Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'H₂Orbit - Your Smart Hydration Companion',
-              style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: 16,
-              ),
-            ),
-            SizedBox(height: 16),
-            Text('Version: 1.0.0', style: TextStyle(color: Colors.white70)),
-            SizedBox(height: 8),
-            Text(
-              'Stay hydrated, stay healthy! 💧',
-              style: TextStyle(color: Colors.white70),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text(
-              'Close',
-              style: TextStyle(color: AppTheme.lightCyan),
-            ),
+        FilledButton(
+          style: FilledButton.styleFrom(
+            backgroundColor: AppTheme.danger,
+            foregroundColor: Colors.white,
           ),
-        ],
-      ),
-    );
-  }
-
-  void _showDeleteAccountDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: AppTheme.deepCyan,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Row(
-          children: [
-            Icon(Icons.warning_amber_rounded, color: Colors.red, size: 24),
-            SizedBox(width: 12),
-            Text('Delete Account', style: TextStyle(color: Colors.white)),
-          ],
+          onPressed: _password.text.isEmpty
+              ? null
+              : () => Navigator.pop(context, _password.text),
+          child: const Text('Delete'),
         ),
-        content: const Text(
-          'Are you sure you want to delete your account? This action cannot be undone and all your data will be permanently lost.',
-          style: TextStyle(color: Colors.white70, height: 1.5),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text(
-              'Cancel',
-              style: TextStyle(color: Colors.white70),
-            ),
-          ),
-          TextButton(
-            onPressed: () async {
-              try {
-                await AuthService().deleteAccount();
-                if (!mounted) return;
-                Navigator.of(context).pushAndRemoveUntil(
-                  MaterialPageRoute(builder: (_) => const AuthScreen()),
-                  (route) => false,
-                );
-              } catch (e) {
-                if (!mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text(
-                      'Failed to delete account. Please try again.',
-                    ),
-                    backgroundColor: Colors.red,
-                  ),
-                );
-              }
-            },
-            child: const Text('Delete', style: TextStyle(color: Colors.red)),
-          ),
-        ],
-      ),
+      ],
     );
   }
 }

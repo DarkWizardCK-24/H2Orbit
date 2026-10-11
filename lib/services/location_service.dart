@@ -1,108 +1,37 @@
+import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:geocoding/geocoding.dart';
 
+typedef Coordinates = ({double latitude, double longitude});
+
+/// Coarse device location, used only to look up the local weather.
 class LocationService {
-  static Future<Position?> getCurrentPosition() async {
-    bool serviceEnabled;
-    LocationPermission permission;
+  LocationService._();
 
-    // Check if location services are enabled
-    serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) {
-      return null;
-    }
+  /// Returns `null` when location is off, denied, or can't be determined.
+  static Future<Coordinates?> currentCoordinates() async {
+    try {
+      if (!await Geolocator.isLocationServiceEnabled()) return null;
 
-    // Check permissions
-    permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
+      var permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
         return null;
       }
-    }
 
-    if (permission == LocationPermission.deniedForever) {
+      // Weather only needs the city, so low accuracy is plenty (and faster).
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.low,
+          timeLimit: Duration(seconds: 10),
+        ),
+      );
+      return (latitude: position.latitude, longitude: position.longitude);
+    } catch (e) {
+      debugPrint('Could not get location: $e');
       return null;
     }
-
-    // Get current position
-    try {
-      return await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.medium,
-      );
-    } catch (e) {
-      print('Error getting position: $e');
-      return null;
-    }
   }
-
-  static Future<String?> getCityName(double latitude, double longitude) async {
-    try {
-      List<Placemark> placemarks = await placemarkFromCoordinates(
-        latitude,
-        longitude,
-      );
-
-      if (placemarks.isNotEmpty) {
-        return placemarks.first.locality ?? placemarks.first.subAdministrativeArea;
-      }
-    } catch (e) {
-      print('Error getting city name: $e');
-    }
-    return null;
-  }
-
-  static Future<LocationData?> getLocationData() async {
-    final position = await getCurrentPosition();
-    if (position == null) return null;
-
-    final cityName = await getCityName(position.latitude, position.longitude);
-
-    return LocationData(
-      latitude: position.latitude,
-      longitude: position.longitude,
-      cityName: cityName ?? 'Unknown',
-    );
-  }
-
-  // Calculate distance between two points (for activity tracking)
-  static double calculateDistance(
-    double startLat,
-    double startLon,
-    double endLat,
-    double endLon,
-  ) {
-    return Geolocator.distanceBetween(startLat, startLon, endLat, endLon);
-  }
-
-  // Check if user is at specific locations (home, gym, office)
-  static Future<bool> isNearLocation(
-    double targetLat,
-    double targetLon,
-    double radiusInMeters,
-  ) async {
-    final position = await getCurrentPosition();
-    if (position == null) return false;
-
-    final distance = calculateDistance(
-      position.latitude,
-      position.longitude,
-      targetLat,
-      targetLon,
-    );
-
-    return distance <= radiusInMeters;
-  }
-}
-
-class LocationData {
-  final double latitude;
-  final double longitude;
-  final String cityName;
-
-  LocationData({
-    required this.latitude,
-    required this.longitude,
-    required this.cityName,
-  });
 }

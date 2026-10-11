@@ -1,11 +1,20 @@
-import 'package:flutter/material.dart';
 import 'dart:math' as math;
+
+import 'package:flutter/material.dart';
 import 'package:h2orbit/utils/theme.dart';
 
+/// Animated circular progress with the percentage in the middle.
 class ProgressRing extends StatefulWidget {
   final double progress;
+  final double strokeWidth;
+  final bool showLabel;
 
-  const ProgressRing({super.key, required this.progress});
+  const ProgressRing({
+    super.key,
+    required this.progress,
+    this.strokeWidth = 8,
+    this.showLabel = true,
+  });
 
   @override
   State<ProgressRing> createState() => _ProgressRingState();
@@ -13,36 +22,30 @@ class ProgressRing extends StatefulWidget {
 
 class _ProgressRingState extends State<ProgressRing>
     with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
+  late final AnimationController _controller = AnimationController(
+    duration: const Duration(milliseconds: 800),
+    vsync: this,
+  );
   late Animation<double> _animation;
-  double _previousProgress = 0.0;
 
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(
-      duration: const Duration(milliseconds: 800),
-      vsync: this,
-    );
-
-    _animation = Tween<double>(
-      begin: 0.0,
-      end: widget.progress,
-    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic));
-
+    _animation = _tween(0, widget.progress);
     _controller.forward();
   }
+
+  Animation<double> _tween(double from, double to) => Tween<double>(
+    begin: from,
+    end: to,
+  ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic));
 
   @override
   void didUpdateWidget(ProgressRing oldWidget) {
     super.didUpdateWidget(oldWidget);
     if ((oldWidget.progress - widget.progress).abs() > 0.001) {
-      _previousProgress = oldWidget.progress;
-      _animation = Tween<double>(begin: _previousProgress, end: widget.progress)
-          .animate(
-            CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic),
-          );
-      _controller.forward(from: 0.0);
+      _animation = _tween(_animation.value, widget.progress);
+      _controller.forward(from: 0);
     }
   }
 
@@ -57,20 +60,24 @@ class _ProgressRingState extends State<ProgressRing>
     return AnimatedBuilder(
       animation: _animation,
       builder: (context, child) {
-        final animatedProgress = _animation.value.clamp(0.0, 1.0);
+        final value = _animation.value.clamp(0.0, 1.0);
         return CustomPaint(
-          painter: ProgressRingPainter(progress: animatedProgress),
-          child: Center(
-            child: Text(
-              '${(animatedProgress * 100).toInt()}%',
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 0.5,
-              ),
-            ),
+          painter: ProgressRingPainter(
+            progress: value,
+            strokeWidth: widget.strokeWidth,
           ),
+          child: widget.showLabel
+              ? Center(
+                  child: Text(
+                    '${(value * 100).round()}%',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                )
+              : null,
         );
       },
     );
@@ -79,76 +86,76 @@ class _ProgressRingState extends State<ProgressRing>
 
 class ProgressRingPainter extends CustomPainter {
   final double progress;
+  final double strokeWidth;
 
-  ProgressRingPainter({required this.progress});
+  ProgressRingPainter({required this.progress, this.strokeWidth = 8});
 
   @override
   void paint(Canvas canvas, Size size) {
     final center = Offset(size.width / 2, size.height / 2);
-    final radius = math.min(size.width, size.height) / 2 - 10;
+    final radius = math.min(size.width, size.height) / 2 - strokeWidth;
+    final rect = Rect.fromCircle(center: center, radius: radius);
 
-    // Background circle
-    final backgroundPaint = Paint()
-      ..color = Colors.white.withOpacity(0.15)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 8
-      ..strokeCap = StrokeCap.round;
-
-    canvas.drawCircle(center, radius, backgroundPaint);
-
-    // Progress arc with gradient
-    if (progress > 0) {
-      final progressPaint = Paint()
-        ..shader = SweepGradient(
-          colors: [AppTheme.lightCyan, AppTheme.oceanBlue, AppTheme.lightCyan],
-          stops: const [0.0, 0.5, 1.0],
-          startAngle: -math.pi / 2,
-          endAngle: -math.pi / 2 + (2 * math.pi * progress),
-        ).createShader(Rect.fromCircle(center: center, radius: radius))
+    canvas.drawCircle(
+      center,
+      radius,
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.15)
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 8
-        ..strokeCap = StrokeCap.round;
+        ..strokeWidth = strokeWidth,
+    );
 
-      final rect = Rect.fromCircle(center: center, radius: radius);
-      final startAngle = -math.pi / 2;
-      final sweepAngle = 2 * math.pi * progress;
+    if (progress <= 0) return;
 
-      canvas.drawArc(rect, startAngle, sweepAngle, false, progressPaint);
+    const start = -math.pi / 2;
+    final sweep = 2 * math.pi * progress;
 
-      // Glow effect
-      final glowPaint = Paint()
-        ..color = AppTheme.lightCyan.withOpacity(0.3)
+    // Soft glow under the arc.
+    canvas.drawArc(
+      rect,
+      start,
+      sweep,
+      false,
+      Paint()
+        ..color = AppTheme.lightCyan.withValues(alpha: 0.35)
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 14
+        ..strokeWidth = strokeWidth + 6
         ..strokeCap = StrokeCap.round
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+    );
 
-      canvas.drawArc(rect, startAngle, sweepAngle, false, glowPaint);
+    // Arc with a gradient that follows its own length (bright on the dark
+    // ocean background at any progress).
+    canvas.drawArc(
+      rect,
+      start,
+      sweep,
+      false,
+      Paint()
+        ..shader = SweepGradient(
+          startAngle: 0,
+          endAngle: sweep < 0.01 ? 0.01 : sweep,
+          colors: const [AppTheme.lightCyan, Color(0xFFD6FBFF)],
+          transform: const GradientRotation(start),
+        ).createShader(rect)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = strokeWidth
+        ..strokeCap = StrokeCap.round,
+    );
 
-      // End point highlight
-      final endAngle = startAngle + sweepAngle;
-      final endPoint = Offset(
-        center.dx + radius * math.cos(endAngle),
-        center.dy + radius * math.sin(endAngle),
-      );
-
-      final endPointPaint = Paint()
-        ..color = Colors.white
-        ..style = PaintingStyle.fill;
-
-      canvas.drawCircle(endPoint, 5, endPointPaint);
-
-      final endPointGlow = Paint()
-        ..color = AppTheme.lightCyan.withOpacity(0.5)
-        ..style = PaintingStyle.fill
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8);
-
-      canvas.drawCircle(endPoint, 6, endPointGlow);
-    }
+    // Bright dot at the tip.
+    final end = start + sweep;
+    canvas.drawCircle(
+      Offset(
+        center.dx + radius * math.cos(end),
+        center.dy + radius * math.sin(end),
+      ),
+      strokeWidth / 2 - 1,
+      Paint()..color = Colors.white,
+    );
   }
 
   @override
-  bool shouldRepaint(ProgressRingPainter oldDelegate) {
-    return (oldDelegate.progress - progress).abs() > 0.001;
-  }
+  bool shouldRepaint(ProgressRingPainter old) =>
+      (old.progress - progress).abs() > 0.001 || old.strokeWidth != strokeWidth;
 }

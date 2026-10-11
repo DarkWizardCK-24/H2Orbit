@@ -1,12 +1,18 @@
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:h2orbit/domain/hydration_math.dart';
 import 'package:h2orbit/models/user_model.dart';
 import 'package:h2orbit/screens/home_screen.dart';
+import 'package:h2orbit/services/auth_service.dart';
+import 'package:h2orbit/services/firebase_service.dart';
+import 'package:h2orbit/utils/constants.dart';
+import 'package:h2orbit/utils/helpers.dart';
+import 'package:h2orbit/utils/snackbar.dart';
 import 'package:h2orbit/utils/theme.dart';
 import 'package:h2orbit/widgets/animated_button.dart';
 import 'package:h2orbit/widgets/glass_container.dart';
+import 'package:h2orbit/widgets/ocean_scaffold.dart';
 import 'package:h2orbit/widgets/scroll_picker.dart';
+import 'package:provider/provider.dart';
 
 class RegistrationScreen extends StatefulWidget {
   const RegistrationScreen({super.key});
@@ -16,23 +22,27 @@ class RegistrationScreen extends StatefulWidget {
 }
 
 class _RegistrationScreenState extends State<RegistrationScreen> {
-  final _formKey = GlobalKey<FormState>();
-  final PageController _pageController = PageController();
-  int _currentStep = 0;
+  static const int _steps = 3;
 
-  // Controllers
+  final _formKey = GlobalKey<FormState>();
+  final _pageController = PageController();
+  int _step = 0;
+
   final _nameController = TextEditingController();
   final _emailController = TextEditingController();
   final _phoneController = TextEditingController();
   final _passwordController = TextEditingController();
+  bool _obscurePassword = true;
 
-  // User data
-  DateTime _selectedDate = DateTime.now().subtract(const Duration(days: 7300));
-  String _selectedGender = 'Male';
-  int _selectedHeight = 170;
-  int _selectedWeight = 70;
-  int _dailyTarget = 8;
-  bool _isLoading = false;
+  DateTime _birthDate = DateTime(DateTime.now().year - 25, 1, 1);
+  String _gender = 'Male';
+  int _height = 170;
+  int _weight = 70;
+  int _dailyTarget = AppConstants.defaultWaterTarget;
+
+  /// Bumped to rebuild the goal wheel when "Use" jumps it to the suggestion.
+  int _targetWheelResets = 0;
+  bool _saving = false;
 
   @override
   void dispose() {
@@ -44,410 +54,446 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
     super.dispose();
   }
 
-  void _nextStep() {
-    if (_currentStep == 0 && !_formKey.currentState!.validate()) return;
+  int get _recommendedGlasses => HydrationMath.recommendedGlasses(
+    weightKg: _weight,
+    age: UserModel.calculateAge(_birthDate),
+    gender: _gender,
+  );
 
-    if (_currentStep < 2) {
-      setState(() => _currentStep++);
-      _pageController.animateToPage(
-        _currentStep,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeInOut,
-      );
+  void _goToStep(int step) {
+    setState(() => _step = step);
+    _pageController.animateToPage(
+      step,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeInOut,
+    );
+  }
+
+  void _next() {
+    if (_step == 0 && !(_formKey.currentState?.validate() ?? false)) return;
+    if (_step < _steps - 1) {
+      _goToStep(_step + 1);
     } else {
-      _completeRegistration();
+      _complete();
     }
   }
 
-  void _previousStep() {
-    if (_currentStep > 0) {
-      setState(() => _currentStep--);
-      _pageController.animateToPage(
-        _currentStep,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeInOut,
-      );
-    }
-  }
+  Future<void> _complete() async {
+    if (_saving) return;
+    setState(() => _saving = true);
 
-  Future<void> _completeRegistration() async {
-    setState(() => _isLoading = true);
-
+    final auth = context.read<AuthService>();
+    final repo = context.read<HydrationRepository>();
+    String? uid;
     try {
-      // Create user
-      final credential = await FirebaseAuth.instance
-          .createUserWithEmailAndPassword(
-            email: _emailController.text.trim(),
-            password: _passwordController.text,
-          );
-
-      // Save user data
-      final user = UserModel(
-        uid: credential.user!.uid,
-        name: _nameController.text.trim(),
-        email: _emailController.text.trim(),
-        phone: _phoneController.text.trim(),
-        dateOfBirth: _selectedDate,
-        age: UserModel.calculateAge(_selectedDate),
-        gender: _selectedGender,
-        heightCm: _selectedHeight,
-        weightKg: _selectedWeight,
-        dailyGlassTarget: _dailyTarget,
+      uid = await auth.signUp(
+        email: _emailController.text,
+        password: _passwordController.text,
       );
-
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(credential.user!.uid)
-          .set(user.toMap());
-
+      await repo.saveUser(
+        UserModel(
+          uid: uid,
+          name: _nameController.text.trim(),
+          email: _emailController.text.trim(),
+          phone: _phoneController.text.trim(),
+          dateOfBirth: _birthDate,
+          age: UserModel.calculateAge(_birthDate),
+          gender: _gender,
+          heightCm: _height,
+          weightKg: _weight,
+          dailyGlassTarget: _dailyTarget,
+        ),
+      );
       if (!mounted) return;
-      Navigator.of(
-        context,
-      ).pushReplacement(MaterialPageRoute(builder: (_) => const HomeScreen()));
-    } on FirebaseAuthException catch (e) {
-      String message = 'An error occurred';
-      if (e.code == 'email-already-in-use') {
-        message = 'This email is already registered';
-      } else if (e.code == 'weak-password') {
-        message = 'Password is too weak';
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute<void>(builder: (_) => const HomeScreen()),
+        (route) => false,
+      );
+    } on AuthFailure catch (e) {
+      if (!mounted) return;
+      showAppSnack(context, e.message, isError: true);
+      // A taken email or weak password is fixed on the first step.
+      if (e.code == 'email-already-in-use' ||
+          e.code == 'weak-password' ||
+          e.code == 'invalid-email') {
+        _goToStep(0);
       }
-
+    } catch (e) {
+      // The account exists but the profile could not be saved. Remove the
+      // account so the user can simply try again instead of being stuck.
+      if (uid != null) await auth.discardCurrentAccount();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message), backgroundColor: Colors.red),
+      showAppSnack(
+        context,
+        "We couldn't finish setting up your profile. Please try again.",
+        isError: true,
       );
     } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
+      if (mounted) setState(() => _saving = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(gradient: AppTheme.oceanGradient),
-        child: SafeArea(
+    return PopScope(
+      canPop: _step == 0,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _goToStep(_step - 1);
+      },
+      child: OceanScaffold(
+        title: 'Create account',
+        body: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 4, 24, 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: LinearProgressIndicator(
+                        value: (_step + 1) / _steps,
+                        minHeight: 8,
+                        backgroundColor: Colors.white.withValues(alpha: 0.2),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    'Step ${_step + 1} of $_steps',
+                    style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: PageView(
+                controller: _pageController,
+                physics: const NeverScrollableScrollPhysics(),
+                children: [_accountStep(), _aboutStep(), _goalStep()],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _stepScaffold({
+    required String title,
+    required String subtitle,
+    required Widget card,
+    required Widget button,
+  }) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            title,
+            style: const TextStyle(
+              fontSize: 26,
+              fontWeight: FontWeight.w700,
+              color: Colors.white,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            subtitle,
+            style: TextStyle(
+              fontSize: 14.5,
+              color: Colors.white.withValues(alpha: 0.75),
+            ),
+          ),
+          const SizedBox(height: 24),
+          card,
+          const SizedBox(height: 28),
+          button,
+        ],
+      ),
+    );
+  }
+
+  Widget _accountStep() {
+    return _stepScaffold(
+      title: 'Your account',
+      subtitle: "Let's get to know you.",
+      card: GlassContainer(
+        child: Form(
+          key: _formKey,
           child: Column(
             children: [
-              Padding(
-                padding: const EdgeInsets.all(20),
-                child: Row(
-                  children: [
-                    if (_currentStep > 0)
-                      IconButton(
-                        icon: const Icon(Icons.arrow_back, color: Colors.white),
-                        onPressed: _previousStep,
-                      ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: LinearProgressIndicator(
-                        value: (_currentStep + 1) / 3,
-                        backgroundColor: Colors.white.withOpacity(0.3),
-                        valueColor: const AlwaysStoppedAnimation<Color>(
-                          AppTheme.lightCyan,
-                        ),
-                        minHeight: 8,
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Text(
-                      '${_currentStep + 1}/3',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ],
+              TextFormField(
+                controller: _nameController,
+                textCapitalization: TextCapitalization.words,
+                textInputAction: TextInputAction.next,
+                validator: (v) => Validators.required(v, 'Enter your name'),
+                decoration: const InputDecoration(
+                  labelText: 'Full name',
+                  prefixIcon: Icon(Icons.person_outline_rounded),
                 ),
               ),
-              Expanded(
-                child: PageView(
-                  controller: _pageController,
-                  physics: const NeverScrollableScrollPhysics(),
-                  children: [
-                    _buildBasicInfo(),
-                    _buildPersonalDetails(),
-                    _buildHealthMetrics(),
-                  ],
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _emailController,
+                keyboardType: TextInputType.emailAddress,
+                textInputAction: TextInputAction.next,
+                validator: Validators.email,
+                decoration: const InputDecoration(
+                  labelText: 'Email',
+                  prefixIcon: Icon(Icons.email_outlined),
+                ),
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _phoneController,
+                keyboardType: TextInputType.phone,
+                textInputAction: TextInputAction.next,
+                validator: Validators.phone,
+                decoration: const InputDecoration(
+                  labelText: 'Phone number',
+                  prefixIcon: Icon(Icons.phone_outlined),
+                ),
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _passwordController,
+                obscureText: _obscurePassword,
+                textInputAction: TextInputAction.done,
+                validator: Validators.password,
+                onFieldSubmitted: (_) => _next(),
+                decoration: InputDecoration(
+                  labelText: 'Password',
+                  helperText: 'At least 6 characters',
+                  helperStyle: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.55),
+                  ),
+                  prefixIcon: const Icon(Icons.lock_outline_rounded),
+                  suffixIcon: IconButton(
+                    tooltip: _obscurePassword
+                        ? 'Show password'
+                        : 'Hide password',
+                    icon: Icon(
+                      _obscurePassword
+                          ? Icons.visibility_off_outlined
+                          : Icons.visibility_outlined,
+                    ),
+                    onPressed: () =>
+                        setState(() => _obscurePassword = !_obscurePassword),
+                  ),
                 ),
               ),
             ],
           ),
         ),
       ),
+      button: AnimatedButton(text: 'Continue', onPressed: _next),
     );
   }
 
-  Widget _buildBasicInfo() {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          const Text(
-            'Basic Information',
-            style: TextStyle(
-              fontSize: 28,
-              fontWeight: FontWeight.bold,
-              color: Colors.white,
+  Widget _aboutStep() {
+    return _stepScaffold(
+      title: 'About you',
+      subtitle: 'Used to suggest a daily water goal that fits you.',
+      card: GlassContainer(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            InkWell(
+              borderRadius: BorderRadius.circular(14),
+              onTap: () async {
+                final date = await showDatePicker(
+                  context: context,
+                  initialDate: _birthDate,
+                  firstDate: DateTime(1920),
+                  lastDate: DateTime.now(),
+                );
+                if (date != null) setState(() => _birthDate = date);
+              },
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Row(
+                  children: [
+                    const Icon(Icons.cake_outlined, color: AppTheme.lightCyan),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Date of birth',
+                            style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.65),
+                              fontSize: 12.5,
+                            ),
+                          ),
+                          Text(
+                            '${Fmt.date(_birthDate)}  ·  '
+                            '${UserModel.calculateAge(_birthDate)} years',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Icon(
+                      Icons.chevron_right_rounded,
+                      color: Colors.white54,
+                    ),
+                  ],
+                ),
+              ),
             ),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            'Let\'s get to know you',
-            style: TextStyle(
-              fontSize: 16,
-              color: Colors.white.withOpacity(0.7),
+            const Divider(height: 28),
+            Text(
+              'Gender',
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.65),
+                fontSize: 12.5,
+              ),
             ),
-          ),
-          const SizedBox(height: 30),
-          GlassContainer(
-            child: Form(
-              key: _formKey,
-              child: Column(
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: SegmentedButton<String>(
+                showSelectedIcon: false,
+                segments: const [
+                  ButtonSegment(value: 'Male', label: Text('Male')),
+                  ButtonSegment(value: 'Female', label: Text('Female')),
+                  ButtonSegment(value: 'Other', label: Text('Other')),
+                ],
+                selected: {_gender},
+                onSelectionChanged: (s) => setState(() => _gender = s.first),
+                style: SegmentedButton.styleFrom(
+                  foregroundColor: Colors.white,
+                  selectedBackgroundColor: AppTheme.lightCyan,
+                  selectedForegroundColor: AppTheme.darkBackground,
+                  side: BorderSide(color: Colors.white.withValues(alpha: 0.25)),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      button: AnimatedButton(text: 'Continue', onPressed: _next),
+    );
+  }
+
+  Widget _goalStep() {
+    final recommended = _recommendedGlasses;
+    return _stepScaffold(
+      title: 'Your goal',
+      subtitle: 'You can change these any time in your profile.',
+      card: GlassContainer(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _PickerBlock(
+              label: 'Height (cm)',
+              child: ScrollPicker(
+                initialValue: _height,
+                minValue: 120,
+                maxValue: 220,
+                onChanged: (v) => setState(() => _height = v),
+              ),
+            ),
+            const SizedBox(height: 20),
+            _PickerBlock(
+              label: 'Weight (kg)',
+              child: ScrollPicker(
+                initialValue: _weight,
+                minValue: 30,
+                maxValue: 200,
+                onChanged: (v) => setState(() => _weight = v),
+              ),
+            ),
+            const SizedBox(height: 20),
+            _PickerBlock(
+              label: 'Daily goal (glasses of 250 ml)',
+              child: ScrollPicker(
+                key: ValueKey('target_$_targetWheelResets'),
+                initialValue: _dailyTarget,
+                minValue: AppConstants.minGlassTarget,
+                maxValue: AppConstants.maxGlassTarget,
+                onChanged: (v) => _dailyTarget = v,
+              ),
+            ),
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppTheme.lightCyan.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Row(
                 children: [
-                  _buildTextField(
-                    controller: _nameController,
-                    label: 'Full Name',
-                    icon: Icons.person,
-                    validator: (v) => v!.isEmpty ? 'Enter your name' : null,
+                  const Icon(
+                    Icons.tips_and_updates_rounded,
+                    color: AppTheme.lightCyan,
+                    size: 20,
                   ),
-                  const SizedBox(height: 20),
-                  _buildTextField(
-                    controller: _emailController,
-                    label: 'Email',
-                    icon: Icons.email,
-                    keyboardType: TextInputType.emailAddress,
-                    validator: (v) => v!.isEmpty || !v.contains('@')
-                        ? 'Enter valid email'
-                        : null,
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Suggested for you: $recommended glasses '
+                      '(${Fmt.ml(recommended * AppConstants.mlPerGlass)})',
+                      style: const TextStyle(color: Colors.white, fontSize: 13),
+                    ),
                   ),
-                  const SizedBox(height: 20),
-                  _buildTextField(
-                    controller: _phoneController,
-                    label: 'Phone Number',
-                    icon: Icons.phone,
-                    keyboardType: TextInputType.phone,
-                    validator: (v) => v!.isEmpty ? 'Enter phone number' : null,
-                  ),
-                  const SizedBox(height: 20),
-                  _buildTextField(
-                    controller: _passwordController,
-                    label: 'Password',
-                    icon: Icons.lock,
-                    obscureText: true,
-                    validator: (v) => v!.length < 6 ? 'Min 6 characters' : null,
+                  TextButton(
+                    onPressed: _dailyTarget == recommended
+                        ? null
+                        : () => setState(() {
+                            _dailyTarget = recommended;
+                            _targetWheelResets++;
+                          }),
+                    child: const Text('Use'),
                   ),
                 ],
               ),
             ),
-          ),
-          const SizedBox(height: 30),
-          AnimatedButton(text: 'Next', onPressed: _nextStep),
-        ],
+          ],
+        ),
+      ),
+      button: AnimatedButton(
+        text: 'Create account',
+        loading: _saving,
+        onPressed: _next,
       ),
     );
   }
+}
 
-  Widget _buildPersonalDetails() {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          const Text(
-            'Personal Details',
-            style: TextStyle(
-              fontSize: 28,
-              fontWeight: FontWeight.bold,
-              color: Colors.white,
-            ),
-          ),
-          const SizedBox(height: 30),
-          GlassContainer(
-            child: Column(
-              children: [
-                ListTile(
-                  leading: const Icon(Icons.cake, color: AppTheme.lightCyan),
-                  title: const Text(
-                    'Date of Birth',
-                    style: TextStyle(color: Colors.white70),
-                  ),
-                  subtitle: Text(
-                    '${_selectedDate.day}/${_selectedDate.month}/${_selectedDate.year}',
-                    style: const TextStyle(color: Colors.white, fontSize: 16),
-                  ),
-                  trailing: const Icon(
-                    Icons.arrow_forward_ios,
-                    color: Colors.white70,
-                    size: 16,
-                  ),
-                  onTap: () async {
-                    final date = await showDatePicker(
-                      context: context,
-                      initialDate: _selectedDate,
-                      firstDate: DateTime(1940),
-                      lastDate: DateTime.now(),
-                    );
-                    if (date != null) setState(() => _selectedDate = date);
-                  },
-                ),
-                const Divider(color: Colors.white24),
-                ListTile(
-                  leading: const Icon(Icons.wc, color: AppTheme.lightCyan),
-                  title: const Text(
-                    'Gender',
-                    style: TextStyle(color: Colors.white70),
-                  ),
-                  subtitle: Text(
-                    _selectedGender,
-                    style: const TextStyle(color: Colors.white, fontSize: 16),
-                  ),
-                  trailing: const Icon(
-                    Icons.arrow_forward_ios,
-                    color: Colors.white70,
-                    size: 16,
-                  ),
-                  onTap: () {
-                    showModalBottomSheet(
-                      context: context,
-                      backgroundColor: AppTheme.deepCyan,
-                      shape: const RoundedRectangleBorder(
-                        borderRadius: BorderRadius.vertical(
-                          top: Radius.circular(20),
-                        ),
-                      ),
-                      builder: (context) => Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: ['Male', 'Female', 'Other'].map((gender) {
-                          return ListTile(
-                            title: Text(
-                              gender,
-                              style: const TextStyle(color: Colors.white),
-                            ),
-                            onTap: () {
-                              setState(() => _selectedGender = gender);
-                              Navigator.pop(context);
-                            },
-                          );
-                        }).toList(),
-                      ),
-                    );
-                  },
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 30),
-          AnimatedButton(text: 'Next', onPressed: _nextStep),
-        ],
-      ),
-    );
-  }
+class _PickerBlock extends StatelessWidget {
+  final String label;
+  final Widget child;
 
-  Widget _buildHealthMetrics() {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          const Text(
-            'Health Metrics',
-            style: TextStyle(
-              fontSize: 28,
-              fontWeight: FontWeight.bold,
-              color: Colors.white,
-            ),
-          ),
-          const SizedBox(height: 30),
-          GlassContainer(
-            child: Column(
-              children: [
-                const Text(
-                  'Height (cm)',
-                  style: TextStyle(color: Colors.white, fontSize: 16),
-                ),
-                const SizedBox(height: 10),
-                ScrollPicker(
-                  initialValue: _selectedHeight,
-                  minValue: 120,
-                  maxValue: 220,
-                  onChanged: (v) => setState(() => _selectedHeight = v),
-                ),
-                const SizedBox(height: 30),
-                const Text(
-                  'Weight (kg)',
-                  style: TextStyle(color: Colors.white, fontSize: 16),
-                ),
-                const SizedBox(height: 10),
-                ScrollPicker(
-                  initialValue: _selectedWeight,
-                  minValue: 30,
-                  maxValue: 200,
-                  onChanged: (v) => setState(() => _selectedWeight = v),
-                ),
-                const SizedBox(height: 30),
-                const Text(
-                  'Daily Water Target (glasses)',
-                  style: TextStyle(color: Colors.white, fontSize: 16),
-                ),
-                const SizedBox(height: 10),
-                ScrollPicker(
-                  initialValue: _dailyTarget,
-                  minValue: 4,
-                  maxValue: 16,
-                  onChanged: (v) => setState(() => _dailyTarget = v),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 30),
-          _isLoading
-              ? const Center(
-                  child: CircularProgressIndicator(color: AppTheme.lightCyan),
-                )
-              : AnimatedButton(
-                  text: 'Complete Registration',
-                  onPressed: _nextStep,
-                ),
-        ],
-      ),
-    );
-  }
+  const _PickerBlock({required this.label, required this.child});
 
-  Widget _buildTextField({
-    required TextEditingController controller,
-    required String label,
-    required IconData icon,
-    TextInputType? keyboardType,
-    bool obscureText = false,
-    String? Function(String?)? validator,
-  }) {
-    return TextFormField(
-      controller: controller,
-      keyboardType: keyboardType,
-      obscureText: obscureText,
-      style: const TextStyle(color: Colors.white),
-      decoration: InputDecoration(
-        labelText: label,
-        labelStyle: TextStyle(color: Colors.white.withOpacity(0.7)),
-        prefixIcon: Icon(icon, color: AppTheme.lightCyan),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(15),
-          borderSide: BorderSide(color: Colors.white.withOpacity(0.3)),
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.w600,
+            fontSize: 14,
+          ),
         ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(15),
-          borderSide: BorderSide(color: Colors.white.withOpacity(0.3)),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(15),
-          borderSide: const BorderSide(color: AppTheme.lightCyan, width: 2),
-        ),
-      ),
-      validator: validator,
+        const SizedBox(height: 10),
+        child,
+      ],
     );
   }
 }

@@ -2,188 +2,141 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:h2orbit/models/user_model.dart';
 import 'package:h2orbit/models/water_intake_model.dart';
 
-class FirebaseService {
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+/// Lifetime totals for a user.
+class IntakeTotals {
+  final int count;
+  final int milliliters;
 
-  // User operations
-  Future<void> saveUser(UserModel user) async {
-    await _firestore.collection('users').doc(user.uid).set(user.toMap());
-  }
+  const IntakeTotals({required this.count, required this.milliliters});
 
+  static const IntakeTotals zero = IntakeTotals(count: 0, milliliters: 0);
+}
+
+/// Storage contract for users and their drinks. The screens only know this
+/// interface, so they can run against an in-memory fake in tests.
+abstract class HydrationRepository {
+  Future<UserModel?> getUser(String uid);
+
+  /// Creates or updates the profile (existing fields are merged).
+  Future<void> saveUser(UserModel user);
+
+  /// Saves [intake] and returns it with its generated id.
+  Future<WaterIntakeModel> addIntake(WaterIntakeModel intake);
+
+  Future<void> deleteIntake(String id);
+
+  /// Drinks logged on the calendar day of [day], oldest first, live.
+  Stream<List<WaterIntakeModel>> watchDay(String userId, DateTime day);
+
+  /// Drinks between [start] (inclusive) and [end] (exclusive), oldest first.
+  Future<List<WaterIntakeModel>> getIntakeBetween(
+    String userId,
+    DateTime start,
+    DateTime end,
+  );
+
+  Future<IntakeTotals> getTotals(String userId);
+
+  /// Removes the profile and every drink of [userId].
+  Future<void> deleteAllUserData(String userId);
+}
+
+class FirestoreHydrationRepository implements HydrationRepository {
+  FirestoreHydrationRepository({FirebaseFirestore? firestore})
+    : _db = firestore ?? FirebaseFirestore.instance;
+
+  final FirebaseFirestore _db;
+
+  CollectionReference<Map<String, dynamic>> get _users =>
+      _db.collection('users');
+  CollectionReference<Map<String, dynamic>> get _intake =>
+      _db.collection('water_intake');
+
+  @override
   Future<UserModel?> getUser(String uid) async {
-    final doc = await _firestore.collection('users').doc(uid).get();
-    if (doc.exists) {
-      return UserModel.fromFirestore(doc);
-    }
-    return null;
+    final doc = await _users.doc(uid).get();
+    return doc.exists ? UserModel.fromFirestore(doc) : null;
   }
 
-  Future<void> updateUser(String uid, Map<String, dynamic> data) async {
-    await _firestore.collection('users').doc(uid).update(data);
+  @override
+  Future<void> saveUser(UserModel user) =>
+      _users.doc(user.uid).set(user.toMap(), SetOptions(merge: true));
+
+  /// Firestore completes a write only once the server confirms it, which never
+  /// happens while offline. The write is queued locally either way (and shows
+  /// up in [watchDay] straight away), so don't make the UI wait for the server.
+  static const Duration _serverWait = Duration(seconds: 3);
+
+  @override
+  Future<WaterIntakeModel> addIntake(WaterIntakeModel intake) async {
+    final ref = intake.id.isEmpty ? _intake.doc() : _intake.doc(intake.id);
+    await ref.set(intake.toMap()).timeout(_serverWait, onTimeout: () {});
+    return intake.copyWith(id: ref.id);
   }
 
-  Stream<UserModel?> getUserStream(String uid) {
-    return _firestore.collection('users').doc(uid).snapshots().map((doc) {
-      if (doc.exists) {
-        return UserModel.fromFirestore(doc);
-      }
-      return null;
-    });
-  }
+  @override
+  Future<void> deleteIntake(String id) =>
+      _intake.doc(id).delete().timeout(_serverWait, onTimeout: () {});
 
-  // Water intake operations
-  Future<void> addWaterIntake(WaterIntakeModel intake) async {
-    await _firestore.collection('water_intake').add(intake.toMap());
-  }
-
-  Future<void> deleteWaterIntake(String id) async {
-    await _firestore.collection('water_intake').doc(id).delete();
-  }
-
-  Stream<List<WaterIntakeModel>> getTodayIntakeStream(String userId) {
-    final today = DateTime.now();
-    final startOfDay = DateTime(today.year, today.month, today.day);
-    final endOfDay = startOfDay.add(const Duration(days: 1));
-
-
-    // Changed to match your index: userId (Ascending) + timestamp (Ascending)
-    return _firestore
-        .collection('water_intake')
+  // These queries match the composite index "userId (asc) + timestamp (asc)".
+  Query<Map<String, dynamic>> _range(
+    String userId,
+    DateTime start,
+    DateTime end,
+  ) {
+    return _intake
         .where('userId', isEqualTo: userId)
-        .where(
-          'timestamp',
-          isGreaterThanOrEqualTo: Timestamp.fromDate(startOfDay),
-        )
-        .where('timestamp', isLessThan: Timestamp.fromDate(endOfDay))
-        .orderBy(
-          'timestamp',
-          descending: false,
-        ) // Changed to ascending to match index
-        .snapshots()
-        .map((snapshot) {
-
-          // Reverse the list to show most recent first in UI
-          final intakes = snapshot.docs
-              .map((doc) => WaterIntakeModel.fromFirestore(doc))
-              .toList()
-              .reversed
-              .toList();
-
-          return intakes;
-        });
+        .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
+        .where('timestamp', isLessThan: Timestamp.fromDate(end))
+        .orderBy('timestamp');
   }
 
-  Future<List<WaterIntakeModel>> getIntakeByDateRange(
+  @override
+  Stream<List<WaterIntakeModel>> watchDay(String userId, DateTime day) {
+    final start = DateTime(day.year, day.month, day.day);
+    final end = DateTime(day.year, day.month, day.day + 1);
+    return _range(userId, start, end).snapshots().map(
+      (snap) => snap.docs.map(WaterIntakeModel.fromFirestore).toList(),
+    );
+  }
+
+  @override
+  Future<List<WaterIntakeModel>> getIntakeBetween(
     String userId,
     DateTime start,
     DateTime end,
   ) async {
-    final snapshot = await _firestore
-        .collection('water_intake')
-        .where('userId', isEqualTo: userId)
-        .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
-        .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(end))
-        .orderBy('timestamp', descending: false) // Changed to match index
-        .get();
-
-    // Reverse to show most recent first
-    return snapshot.docs
-        .map((doc) => WaterIntakeModel.fromFirestore(doc))
-        .toList()
-        .reversed
-        .toList();
+    final snap = await _range(userId, start, end).get();
+    return snap.docs.map(WaterIntakeModel.fromFirestore).toList();
   }
 
-  // Analytics
-  Future<Map<String, int>> getWeeklyStats(String userId) async {
-    final now = DateTime.now();
-    final weekStart = now.subtract(Duration(days: now.weekday - 1));
-    final weekStartMidnight = DateTime(
-      weekStart.year,
-      weekStart.month,
-      weekStart.day,
+  @override
+  Future<IntakeTotals> getTotals(String userId) async {
+    final snap = await _intake
+        .where('userId', isEqualTo: userId)
+        .aggregate(count(), sum('milliliters'))
+        .get();
+    return IntakeTotals(
+      count: snap.count ?? 0,
+      milliliters: (snap.getSum('milliliters') ?? 0).round(),
     );
-
-    final snapshot = await _firestore
-        .collection('water_intake')
-        .where('userId', isEqualTo: userId)
-        .where(
-          'timestamp',
-          isGreaterThanOrEqualTo: Timestamp.fromDate(weekStartMidnight),
-        )
-        .get();
-
-    final Map<String, int> weeklyData = {};
-    final days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-
-    for (var day in days) {
-      weeklyData[day] = 0;
-    }
-
-    for (var doc in snapshot.docs) {
-      final intake = WaterIntakeModel.fromFirestore(doc);
-      final dayIndex = intake.timestamp.weekday - 1;
-      weeklyData[days[dayIndex]] =
-          (weeklyData[days[dayIndex]] ?? 0) + intake.milliliters;
-    }
-
-    return weeklyData;
   }
 
-  Future<int> getMonthlyTotal(String userId) async {
-    final now = DateTime.now();
-    final monthStart = DateTime(now.year, now.month, 1);
-
-    final snapshot = await _firestore
-        .collection('water_intake')
-        .where('userId', isEqualTo: userId)
-        .where(
-          'timestamp',
-          isGreaterThanOrEqualTo: Timestamp.fromDate(monthStart),
-        )
-        .get();
-
-    int total = 0;
-    for (var doc in snapshot.docs) {
-      final intake = WaterIntakeModel.fromFirestore(doc);
-      total += intake.milliliters;
-    }
-
-    return total;
-  }
-
-  Future<int> getCurrentStreak(String userId) async {
-    final now = DateTime.now();
-    int streak = 0;
-    DateTime checkDate = DateTime(now.year, now.month, now.day);
-
+  @override
+  Future<void> deleteAllUserData(String userId) async {
+    // Batches are limited to 500 writes, so delete in pages.
     while (true) {
-      final startOfDay = DateTime(
-        checkDate.year,
-        checkDate.month,
-        checkDate.day,
-      );
-      final endOfDay = startOfDay.add(const Duration(days: 1));
-
-      final snapshot = await _firestore
-          .collection('water_intake')
+      final page = await _intake
           .where('userId', isEqualTo: userId)
-          .where(
-            'timestamp',
-            isGreaterThanOrEqualTo: Timestamp.fromDate(startOfDay),
-          )
-          .where('timestamp', isLessThan: Timestamp.fromDate(endOfDay))
-          .limit(1)
+          .limit(400)
           .get();
-
-      if (snapshot.docs.isEmpty) {
-        break;
+      if (page.docs.isEmpty) break;
+      final batch = _db.batch();
+      for (final doc in page.docs) {
+        batch.delete(doc.reference);
       }
-
-      streak++;
-      checkDate = checkDate.subtract(const Duration(days: 1));
+      await batch.commit();
     }
-
-    return streak;
+    await _users.doc(userId).delete();
   }
 }

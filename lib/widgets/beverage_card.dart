@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:h2orbit/utils/theme.dart';
-import 'glass_container.dart';
+import 'package:h2orbit/widgets/glass_container.dart';
 
+/// One-tap "add a drink" tile.
 class BeverageCard extends StatefulWidget {
   final String name;
   final IconData icon;
@@ -23,24 +23,14 @@ class BeverageCard extends StatefulWidget {
 
 class _BeverageCardState extends State<BeverageCard>
     with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<double> _scaleAnimation;
-  bool _isPressed = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      duration: const Duration(milliseconds: 150),
-      vsync: this,
-    );
-    _scaleAnimation = Tween<double>(begin: 1.0, end: 0.92).animate(
-      CurvedAnimation(
-        parent: _controller,
-        curve: Curves.easeInOut,
-      ),
-    );
-  }
+  late final AnimationController _controller = AnimationController(
+    duration: const Duration(milliseconds: 140),
+    vsync: this,
+  );
+  late final Animation<double> _scale = Tween<double>(
+    begin: 1.0,
+    end: 0.93,
+  ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut));
 
   @override
   void dispose() {
@@ -48,88 +38,64 @@ class _BeverageCardState extends State<BeverageCard>
     super.dispose();
   }
 
-  void _handleTapDown(TapDownDetails details) {
-    setState(() => _isPressed = true);
-    _controller.forward();
-  }
-
-  void _handleTapUp(TapUpDetails details) {
-    setState(() => _isPressed = false);
-    _controller.reverse();
-    widget.onTap();
-  }
-
-  void _handleTapCancel() {
-    setState(() => _isPressed = false);
-    _controller.reverse();
-  }
-
   @override
   Widget build(BuildContext context) {
-    return ScaleTransition(
-      scale: _scaleAnimation,
-      child: GestureDetector(
-        onTapDown: _handleTapDown,
-        onTapUp: _handleTapUp,
-        onTapCancel: _handleTapCancel,
-        child: GlassContainer(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 50,
-                height: 50,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [
-                      AppTheme.lightCyan.withOpacity(0.4),
-                      AppTheme.oceanBlue.withOpacity(0.4),
-                    ],
+    return Semantics(
+      button: true,
+      label: 'Add ${widget.ml} millilitres, ${widget.name}',
+      excludeSemantics: true,
+      child: ScaleTransition(
+        scale: _scale,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTapDown: (_) => _controller.forward(),
+          onTapCancel: () => _controller.reverse(),
+          onTapUp: (_) {
+            _controller.reverse();
+            widget.onTap();
+          },
+          child: GlassContainer(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 14),
+            borderRadius: BorderRadius.circular(18),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [
+                        AppTheme.lightCyan.withValues(alpha: 0.45),
+                        AppTheme.oceanBlue.withValues(alpha: 0.45),
+                      ],
+                    ),
                   ),
-                  boxShadow: _isPressed
-                      ? []
-                      : [
-                          BoxShadow(
-                            color: AppTheme.lightCyan.withOpacity(0.25),
-                            blurRadius: 12,
-                            spreadRadius: 1,
-                          ),
-                        ],
+                  child: Icon(widget.icon, size: 24, color: Colors.white),
                 ),
-                child: Center(
-                  child: FaIcon(
-                    widget.icon,
-                    size: 30,
+                const SizedBox(height: 8),
+                Text(
+                  widget.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
                     color: Colors.white,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                widget.name,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 0.3,
+                Text(
+                  '${widget.ml} ml',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.7),
+                    fontSize: 11.5,
+                  ),
                 ),
-                textAlign: TextAlign.center,
-              ),
-              Text(
-                '${widget.ml} ml',
-                style: TextStyle(
-                  color: Colors.white.withOpacity(0.7),
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                ),
-                textAlign: TextAlign.center,
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

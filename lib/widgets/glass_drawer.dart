@@ -1,223 +1,218 @@
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 import 'package:h2orbit/screens/analytics_screen.dart';
 import 'package:h2orbit/screens/notification_settings_screen.dart';
 import 'package:h2orbit/screens/profile_screen.dart';
 import 'package:h2orbit/utils/theme.dart';
-import 'dart:ui';
+import 'package:h2orbit/widgets/app_logo.dart';
+import 'package:h2orbit/widgets/ocean_scaffold.dart';
 
+/// Slide-in menu from the right edge of the home screen.
 class GlassDrawer extends StatelessWidget {
   final int currentStreak;
+  final String userName;
+  final String email;
 
   const GlassDrawer({
     super.key,
     required this.currentStreak,
+    this.userName = '',
+    this.email = '',
   });
+
+  void _open(BuildContext context, Widget screen) {
+    final navigator = Navigator.of(context);
+    navigator.pop(); // close the drawer
+    navigator.push(MaterialPageRoute<void>(builder: (_) => screen));
+  }
 
   @override
   Widget build(BuildContext context) {
+    final initial = userName.trim().isEmpty
+        ? '?'
+        : userName.trim()[0].toUpperCase();
+    const radius = BorderRadius.only(
+      topLeft: Radius.circular(30),
+      bottomLeft: Radius.circular(30),
+    );
+
     return Align(
       alignment: Alignment.topRight,
       child: Material(
         color: Colors.transparent,
-        child: Container(
-          width: MediaQuery.of(context).size.width * 0.7,
+        child: SizedBox(
+          width: (MediaQuery.of(context).size.width * 0.78).clamp(260.0, 340.0),
           height: MediaQuery.of(context).size.height,
-          margin: const EdgeInsets.only(top: 0),
           child: ClipRRect(
-            borderRadius: const BorderRadius.only(
-              topLeft: Radius.circular(30),
-              bottomLeft: Radius.circular(30),
-            ),
+            borderRadius: radius,
             child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+              filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
               child: Container(
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
                     colors: [
-                      Colors.white.withOpacity(0.15),
-                      Colors.white.withOpacity(0.05),
+                      AppTheme.deepCyan.withValues(alpha: 0.92),
+                      AppTheme.darkBackground.withValues(alpha: 0.96),
                     ],
                   ),
-                  borderRadius: const BorderRadius.only(
-                    topLeft: Radius.circular(30),
-                    bottomLeft: Radius.circular(30),
-                  ),
+                  borderRadius: radius,
                   border: Border.all(
-                    color: Colors.white.withOpacity(0.2),
-                    width: 1.5,
+                    color: Colors.white.withValues(alpha: 0.18),
+                    width: 1.2,
                   ),
                 ),
                 child: SafeArea(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // Header
                       Padding(
-                        padding: const EdgeInsets.all(24.0),
+                        padding: const EdgeInsets.fromLTRB(24, 20, 12, 8),
                         child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            const Text(
-                              'Menu',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 28,
-                                fontWeight: FontWeight.bold,
-                                letterSpacing: 0.5,
-                              ),
-                            ),
+                            const AppLogo(size: 40),
+                            const SizedBox(width: 12),
+                            const Expanded(child: BrandTitle(fontSize: 26)),
                             IconButton(
+                              tooltip: 'Close menu',
                               icon: const Icon(
-                                Icons.close,
+                                Icons.close_rounded,
                                 color: Colors.white,
-                                size: 28,
                               ),
                               onPressed: () => Navigator.pop(context),
                             ),
                           ],
                         ),
                       ),
-
-                      // Streak Display
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 24,
+                          vertical: 12,
+                        ),
+                        child: Row(
+                          children: [
+                            CircleAvatar(
+                              radius: 24,
+                              backgroundColor: AppTheme.lightCyan.withValues(
+                                alpha: 0.25,
+                              ),
+                              child: Text(
+                                initial,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 20,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    userName.isEmpty ? 'Welcome' : userName,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 16,
+                                    ),
+                                  ),
+                                  if (email.isNotEmpty)
+                                    Text(
+                                      email,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        color: Colors.white.withValues(
+                                          alpha: 0.6,
+                                        ),
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                       if (currentStreak > 0)
                         Container(
                           margin: const EdgeInsets.symmetric(
                             horizontal: 24,
                             vertical: 8,
                           ),
-                          padding: const EdgeInsets.all(16),
+                          padding: const EdgeInsets.all(14),
                           decoration: BoxDecoration(
-                            color: Colors.orange.withOpacity(0.2),
+                            color: AppTheme.streak.withValues(alpha: 0.18),
                             borderRadius: BorderRadius.circular(16),
                             border: Border.all(
-                              color: Colors.orange.withOpacity(0.3),
-                              width: 1,
+                              color: AppTheme.streak.withValues(alpha: 0.35),
                             ),
                           ),
                           child: Row(
                             children: [
                               const Icon(
-                                Icons.local_fire_department,
-                                color: Colors.orange,
+                                Icons.local_fire_department_rounded,
+                                color: AppTheme.streak,
                                 size: 28,
                               ),
                               const SizedBox(width: 12),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Text(
-                                      '$currentStreak Day Streak',
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 18,
-                                      ),
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    '$currentStreak day streak',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 16,
                                     ),
-                                    Text(
-                                      'Keep it up!',
-                                      style: TextStyle(
-                                        color: Colors.white.withOpacity(0.7),
-                                        fontSize: 12,
+                                  ),
+                                  Text(
+                                    'Goal reached every day',
+                                    style: TextStyle(
+                                      color: Colors.white.withValues(
+                                        alpha: 0.65,
                                       ),
+                                      fontSize: 12,
                                     ),
-                                  ],
-                                ),
+                                  ),
+                                ],
                               ),
                             ],
                           ),
                         ),
-
-                      const SizedBox(height: 16),
-
-                      // Divider
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 24),
-                        child: Divider(
-                          color: Colors.white.withOpacity(0.2),
-                          thickness: 1,
-                        ),
-                      ),
-
                       const SizedBox(height: 8),
-
-                      // Menu Items
                       _DrawerItem(
                         icon: Icons.bar_chart_rounded,
                         title: 'Analytics',
-                        onTap: () {
-                          Navigator.pop(context);
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => const AnalyticsScreen(),
-                            ),
-                          );
-                        },
+                        onTap: () => _open(context, const AnalyticsScreen()),
                       ),
-
                       _DrawerItem(
-                        icon: Icons.notifications_outlined,
+                        icon: Icons.notifications_none_rounded,
                         title: 'Notifications',
-                        onTap: () {
-                          Navigator.pop(context);
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => const NotificationSettingsScreen(),
-                            ),
-                          );
-                        },
+                        onTap: () =>
+                            _open(context, const NotificationSettingsScreen()),
                       ),
-
                       _DrawerItem(
-                        icon: Icons.person_outline,
+                        icon: Icons.person_outline_rounded,
                         title: 'Profile',
-                        onTap: () {
-                          Navigator.pop(context);
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => const ProfileScreen(),
-                            ),
-                          );
-                        },
+                        onTap: () => _open(context, const ProfileScreen()),
                       ),
-
                       const Spacer(),
-
-                      // Footer
                       Padding(
-                        padding: const EdgeInsets.all(24.0),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Divider(
-                              color: Colors.white.withOpacity(0.2),
-                              thickness: 1,
-                            ),
-                            const SizedBox(height: 16),
-                            Text(
-                              'H₂Orbit',
-                              style: TextStyle(
-                                color: Colors.white.withOpacity(0.6),
-                                fontSize: 14,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              'Stay Hydrated, Stay Healthy',
-                              style: TextStyle(
-                                color: Colors.white.withOpacity(0.4),
-                                fontSize: 12,
-                              ),
-                            ),
-                          ],
+                        padding: const EdgeInsets.all(24),
+                        child: Text(
+                          'Stay hydrated, stay healthy',
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.45),
+                            fontSize: 12,
+                          ),
                         ),
                       ),
                     ],
@@ -248,40 +243,30 @@ class _DrawerItem extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       child: Material(
-        color: Colors.transparent,
+        color: Colors.white.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(14),
         child: InkWell(
           onTap: onTap,
-          borderRadius: BorderRadius.circular(12),
-          splashColor: AppTheme.lightCyan.withOpacity(0.2),
-          highlightColor: AppTheme.lightCyan.withOpacity(0.1),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(12),
-              color: Colors.white.withOpacity(0.05),
-            ),
+          borderRadius: BorderRadius.circular(14),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
             child: Row(
               children: [
-                Icon(
-                  icon,
-                  color: AppTheme.lightCyan,
-                  size: 24,
-                ),
+                Icon(icon, color: AppTheme.lightCyan, size: 24),
                 const SizedBox(width: 16),
                 Expanded(
                   child: Text(
                     title,
                     style: const TextStyle(
                       color: Colors.white,
-                      fontSize: 16,
+                      fontSize: 15,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
                 ),
                 Icon(
-                  Icons.arrow_forward_ios,
-                  color: Colors.white.withOpacity(0.4),
-                  size: 16,
+                  Icons.chevron_right_rounded,
+                  color: Colors.white.withValues(alpha: 0.4),
                 ),
               ],
             ),
